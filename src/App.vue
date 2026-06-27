@@ -13,32 +13,48 @@
         style="display: flex; flex-direction: column;"
       >
         <div class="sider-header">
-          <h1 v-if="!collapsed" class="app-title">
-            <AndroidOutlined /> WAM
-          </h1>
-          <AndroidOutlined v-else class="app-icon" />
+          <div v-if="!collapsed" class="header-left">
+            <!-- Claude Logo -->
+            <div class="claude-logo" @click="showClaudeSettings = !showClaudeSettings">
+              <img src="@/assets/claude-icon.png" alt="Claude AI" class="logo-image" />
+            </div>
 
-          <a-tooltip :title="isDark ? '切换到亮色模式' : '切换到暗黑模式'" placement="bottom">
+            <h1 class="app-title">
+              <AndroidOutlined /> WAM
+            </h1>
+          </div>
+
+          <div v-if="!collapsed" class="header-right">
+            <a-tooltip :title="isDark ? '切换到亮色模式' : '切换到暗黑模式'" placement="bottom">
+              <a-button
+                type="text"
+                class="theme-btn"
+                :icon="h(isDark ? BulbOutlined : BulbFilled)"
+                @click="toggleTheme"
+              />
+            </a-tooltip>
+
             <a-button
               type="text"
-              class="theme-btn"
-              :icon="h(isDark ? BulbOutlined : BulbFilled)"
-              @click="toggleTheme"
+              class="collapse-btn"
+              :icon="h(MenuFoldOutlined)"
+              @click="collapsed = !collapsed"
             />
-          </a-tooltip>
+          </div>
 
           <a-button
+            v-else
             type="text"
-            class="collapse-btn"
-            :icon="h(collapsed ? MenuUnfoldOutlined : MenuFoldOutlined)"
+            class="collapse-btn-only"
+            :icon="h(MenuUnfoldOutlined)"
             @click="collapsed = !collapsed"
           />
         </div>
 
-        <div class="add-project-btn">
+        <div v-if="!collapsed" class="add-project-btn">
           <a-dropdown :trigger="['click']">
             <a-button type="primary" size="large" block :icon="h(PlusOutlined)">
-              <span v-if="!collapsed">添加项目/APK</span>
+              <span>添加项目/APK</span>
             </a-button>
             <template #overlay>
               <a-menu @click="handleAddProject">
@@ -48,36 +64,26 @@
                 <a-menu-item key="apk">
                   <FileOutlined /> 导入单体 APK
                 </a-menu-item>
-                <a-menu-divider />
-                <a-menu-item key="claude-settings">
-                  <RobotOutlined /> Claude AI 配置
-                </a-menu-item>
               </a-menu>
             </template>
           </a-dropdown>
         </div>
 
         <ProjectList :collapsed="collapsed" />
-
-        <!-- Claude 设置按钮 -->
-        <div class="claude-settings-btn">
-          <a-button
-            type="default"
-            size="large"
-            block
-            :icon="h(RobotOutlined)"
-            @click="showClaudeSettings = !showClaudeSettings"
-            :style="{ background: showClaudeSettings ? 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)' : '', color: showClaudeSettings ? 'white' : '' }"
-          >
-            <span v-if="!collapsed">{{ showClaudeSettings ? '返回项目' : 'Claude AI 配置' }}</span>
-          </a-button>
-        </div>
       </a-layout-sider>
 
       <!-- 右侧主面板 -->
       <a-layout class="main-layout">
         <a-layout-content class="app-content">
-          <div v-if="!projectStore.selectedProject" class="empty-state">
+          <!-- Claude 设置页面（全局，不依赖项目选择） -->
+          <div v-if="showClaudeSettings" class="content-wrapper">
+            <div class="function-area full-width">
+              <ClaudeSettings @backToProjects="showClaudeSettings = false" />
+            </div>
+          </div>
+
+          <!-- 未选中项目时的空状态 -->
+          <div v-else-if="!projectStore.selectedProject" class="empty-state">
             <a-empty
               description="请先从左侧添加或选择一个项目"
               :image="Empty.PRESENTED_IMAGE_SIMPLE"
@@ -88,14 +94,12 @@
             </a-empty>
           </div>
 
+          <!-- 已选中项目时的内容区域 -->
           <div v-else class="content-wrapper">
             <div :class="['function-area', { 'full-width': !projectStore.isRunning }]">
-              <ClaudeSettings v-if="showClaudeSettings" />
-              <template v-else>
-                <ProjectDetail />
-                <DeviceManager />
-                <DevToolbox />
-              </template>
+              <ProjectDetail />
+              <DeviceManager />
+              <DevToolbox />
             </div>
 
             <div v-if="projectStore.isRunning" class="log-area">
@@ -244,20 +248,66 @@ refreshDevices();
 }
 
 .sider-header {
-  padding: 20px;
-  text-align: center;
+  padding: 16px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.1);
   position: relative;
   display: flex;
   align-items: center;
+  justify-content: space-between;
+  min-height: 64px;
+}
+
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 1;
+}
+
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.claude-logo {
+  width: 40px;
+  height: 40px;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  border-radius: 8px;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
   justify-content: center;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.claude-logo:hover {
+  background: rgba(255, 255, 255, 0.2);
+  transform: scale(1.05);
+}
+
+.logo-image {
+  width: 32px;
+  height: 32px;
+  object-fit: contain;
+}
+
+.collapse-btn-only {
+  color: rgba(255, 255, 255, 0.65);
+  font-size: 18px;
+  padding: 8px;
+  margin: 0 auto;
+  display: block;
+}
+
+.collapse-btn-only:hover {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.1);
 }
 
 .collapse-btn {
-  position: absolute;
-  right: 8px;
-  top: 50%;
-  transform: translateY(-50%);
   color: rgba(255, 255, 255, 0.65);
   font-size: 16px;
   padding: 4px 8px;
@@ -270,10 +320,6 @@ refreshDevices();
 }
 
 .theme-btn {
-  position: absolute;
-  right: 40px;
-  top: 50%;
-  transform: translateY(-50%);
   color: rgba(255, 255, 255, 0.65);
   font-size: 16px;
   padding: 4px 8px;
@@ -287,21 +333,12 @@ refreshDevices();
 
 .app-title {
   color: #fff;
-  font-size: 24px;
+  font-size: 20px;
   font-weight: bold;
   margin: 0;
   display: flex;
   align-items: center;
-  justify-content: center;
   gap: 8px;
-  flex: 1;
-}
-
-.app-icon {
-  font-size: 32px;
-  color: #1890ff;
-  display: block;
-  margin: 0 auto;
 }
 
 .add-project-btn {
@@ -309,15 +346,6 @@ refreshDevices();
 }
 
 .add-project-btn :deep(.ant-btn) {
-  justify-content: center;
-}
-
-.claude-settings-btn {
-  padding: 16px;
-  margin-top: auto;
-}
-
-.claude-settings-btn :deep(.ant-btn) {
   justify-content: center;
 }
 

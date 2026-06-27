@@ -9,9 +9,17 @@
       </template>
 
       <template #extra>
-        <a-button type="primary" size="large" @click="saveSettings" :icon="h(SaveOutlined)">
-          保存配置
-        </a-button>
+        <a-space>
+          <a-button @click="emit('backToProjects')" type="default">
+            返回项目
+          </a-button>
+          <a-button @click="showSecurityModal = true" :icon="h(LockOutlined)">
+            安全设置
+          </a-button>
+          <a-button type="primary" size="large" @click="saveSettings" :icon="h(SaveOutlined)">
+            保存配置
+          </a-button>
+        </a-space>
       </template>
 
       <a-form :model="localConfig" layout="vertical" class="settings-form">
@@ -30,15 +38,66 @@
                 </template>
               </a-form-item>
 
-              <a-form-item label="API 密钥">
-                <a-input-password
-                  v-model:value="localConfig.authToken"
-                  placeholder="sk-ant-..."
-                  size="large"
-                  :prefix="h(KeyOutlined)"
-                />
+              <!-- 密钥管理区域 -->
+              <a-form-item label="API 密钥管理">
+                <div class="api-keys-section">
+                  <div
+                    v-for="(key, index) in localConfig.apiKeys"
+                    :key="index"
+                    :class="['api-key-item', { selected: localConfig.selectedKeyIndex === index }]"
+                    @click="selectKey(index)"
+                  >
+                    <a-radio
+                      :checked="localConfig.selectedKeyIndex === index"
+                      class="key-radio"
+                    />
+
+                    <span class="key-alias">{{ key.alias || `密钥 ${index + 1}` }}</span>
+
+                    <span class="key-token-masked">{{ maskToken(key.token) }}</span>
+
+                    <a-space class="key-actions" @click.stop>
+                      <a-button
+                        type="text"
+                        @click="viewKey(index)"
+                        :icon="h(EyeOutlined)"
+                        title="查看密钥"
+                        size="small"
+                        class="action-btn"
+                      />
+                      <a-button
+                        type="text"
+                        @click="copyKey(index)"
+                        :icon="h(CopyOutlined)"
+                        title="复制密钥"
+                        size="small"
+                        class="action-btn"
+                      />
+                      <a-button
+                        v-if="localConfig.apiKeys.length > 1"
+                        danger
+                        type="text"
+                        @click="removeKey(index)"
+                        :icon="h(DeleteOutlined)"
+                        title="删除密钥"
+                        size="small"
+                        class="action-btn"
+                      />
+                    </a-space>
+                  </div>
+
+                  <a-button
+                    type="dashed"
+                    block
+                    @click="showAddKeyModal = true"
+                    :icon="h(PlusOutlined)"
+                    class="add-key-btn"
+                  >
+                    添加新密钥
+                  </a-button>
+                </div>
                 <template #extra>
-                  <span style="color: rgba(0, 0, 0, 0.45);">您的 Claude API 密钥</span>
+                  <span style="color: rgba(0, 0, 0, 0.45);">管理多个 API 密钥，选择一个作为当前使用的密钥</span>
                 </template>
               </a-form-item>
             </a-card>
@@ -151,6 +210,143 @@
         </a-row>
       </a-form>
     </a-card>
+
+    <!-- 安全设置弹窗 -->
+    <a-modal
+      v-model:open="showSecurityModal"
+      title="安全设置"
+      @ok="saveSecuritySettings"
+      okText="保存"
+      cancelText="取消"
+      width="500px"
+    >
+      <a-form layout="vertical">
+        <a-alert
+          message="密钥保护"
+          description="设置后，查看和复制密钥时需要验证提示词和密码"
+          type="info"
+          show-icon
+          style="margin-bottom: 20px;"
+        />
+
+        <a-form-item label="提示词">
+          <a-input
+            v-model:value="securitySettings.hint"
+            placeholder="例如：我的生日"
+            size="large"
+          />
+          <template #extra>
+            <span style="color: #666; font-size: 13px;">设置一个容易记住的提示词</span>
+          </template>
+        </a-form-item>
+
+        <a-form-item label="保护密码">
+          <a-input-password
+            v-model:value="securitySettings.password"
+            placeholder="输入保护密码"
+            size="large"
+            :visibilityToggle="false"
+          />
+          <template #extra>
+            <span style="color: #666; font-size: 13px;">留空则不启用密钥保护</span>
+          </template>
+        </a-form-item>
+      </a-form>
+    </a-modal>
+
+    <!-- 验证弹窗 -->
+    <a-modal
+      v-model:open="showVerifyModal"
+      title="验证身份"
+      @ok="handleVerify"
+      okText="验证"
+      cancelText="取消"
+      width="400px"
+    >
+      <a-form layout="vertical">
+        <a-alert
+          v-if="claudeStore.security.hint"
+          :message="`提示：${claudeStore.security.hint}`"
+          type="info"
+          show-icon
+          style="margin-bottom: 20px;"
+        />
+
+        <a-form-item label="请输入保护密码">
+          <a-input-password
+            v-model:value="verifyPassword"
+            placeholder="输入密码"
+            size="large"
+            :visibilityToggle="false"
+            @pressEnter="handleVerify"
+          />
+        </a-form-item>
+      </a-form>
+    </a-modal>
+
+    <!-- 查看密钥弹窗 -->
+    <a-modal
+      v-model:open="showKeyModal"
+      title="查看密钥"
+      :footer="null"
+      width="600px"
+    >
+      <a-form layout="vertical">
+        <a-form-item label="API 密钥">
+          <a-textarea
+            :value="viewedKey"
+            :auto-size="{ minRows: 3, maxRows: 5 }"
+            readonly
+            class="key-display-area"
+          />
+          <div style="margin-top: 12px;">
+            <a-button
+              type="primary"
+              @click="copyToClipboard(viewedKey)"
+              :icon="h(CopyOutlined)"
+              block
+            >
+              复制到剪贴板
+            </a-button>
+          </div>
+        </a-form-item>
+      </a-form>
+    </a-modal>
+
+    <!-- 添加密钥弹窗 -->
+    <a-modal
+      v-model:open="showAddKeyModal"
+      title="添加 API 密钥"
+      @ok="handleAddKey"
+      okText="添加"
+      cancelText="取消"
+      width="500px"
+    >
+      <a-form layout="vertical">
+        <a-form-item label="密钥别名">
+          <a-input
+            v-model:value="newKey.alias"
+            placeholder="例如：生产环境密钥"
+            size="large"
+          />
+          <template #extra>
+            <span style="color: #666; font-size: 13px;">为密钥设置一个容易识别的名称</span>
+          </template>
+        </a-form-item>
+
+        <a-form-item label="API 密钥">
+          <a-input-password
+            v-model:value="newKey.token"
+            placeholder="sk-ant-..."
+            size="large"
+            :visibilityToggle="false"
+          />
+          <template #extra>
+            <span style="color: #666; font-size: 13px;">从 Claude 控制台获取您的 API 密钥</span>
+          </template>
+        </a-form-item>
+      </a-form>
+    </a-modal>
   </div>
 </template>
 
@@ -164,14 +360,63 @@ import {
   DeleteOutlined,
   PlusOutlined,
   RobotOutlined,
-  ThunderboltOutlined
+  ThunderboltOutlined,
+  LockOutlined,
+  EyeOutlined,
+  CopyOutlined
 } from '@ant-design/icons-vue';
 import { useClaudeStore } from '@/stores/claude';
+
+const emit = defineEmits(['backToProjects']);
 
 const claudeStore = useClaudeStore();
 
 // 本地配置（深拷贝，避免直接修改 store）
 const localConfig = ref(JSON.parse(JSON.stringify(claudeStore.config)));
+
+// 确保 apiKeys 结构存在
+if (!localConfig.value.apiKeys) {
+  // 迁移旧的 authToken 到新结构
+  localConfig.value.apiKeys = [
+    { token: localConfig.value.authToken || '', alias: '' }
+  ];
+  localConfig.value.selectedKeyIndex = 0;
+} else {
+  // 确保每个 key 都有 alias 字段
+  localConfig.value.apiKeys = localConfig.value.apiKeys.map(key => ({
+    token: key.token || '',
+    alias: key.alias || ''
+  }));
+}
+
+// 安全设置
+const showSecurityModal = ref(false);
+const securitySettings = ref({
+  hint: claudeStore.security?.hint || '',
+  password: claudeStore.security?.password || ''
+});
+
+// 验证相关
+const showVerifyModal = ref(false);
+const verifyPassword = ref('');
+const pendingAction = ref(null); // { type: 'view' | 'copy', index: number }
+
+// 查看密钥
+const showKeyModal = ref(false);
+const viewedKey = ref('');
+
+// 添加密钥相关
+const showAddKeyModal = ref(false);
+const newKey = ref({
+  alias: '',
+  token: ''
+});
+
+// 隐藏密钥显示
+function maskToken(token) {
+  if (!token || token.length < 12) return '***';
+  return token.substring(0, 8) + '...' + token.substring(token.length - 4);
+}
 
 // 保存设置
 function saveSettings() {
@@ -180,8 +425,8 @@ function saveSettings() {
     return;
   }
 
-  if (!localConfig.value.authToken.trim()) {
-    message.warning('请填写 API 密钥');
+  if (localConfig.value.apiKeys.length === 0 || !localConfig.value.apiKeys[localConfig.value.selectedKeyIndex]?.token.trim()) {
+    message.warning('请至少配置一个有效的 API 密钥');
     return;
   }
 
@@ -189,6 +434,9 @@ function saveSettings() {
     message.warning('至少需要配置一个模型');
     return;
   }
+
+  // 更新 authToken 为当前选中的密钥（保持向后兼容）
+  localConfig.value.authToken = localConfig.value.apiKeys[localConfig.value.selectedKeyIndex].token;
 
   claudeStore.updateConfig(localConfig.value);
   message.success('配置已保存');
@@ -208,6 +456,131 @@ function addModel() {
 // 删除模型
 function removeModel(index) {
   localConfig.value.models.splice(index, 1);
+}
+
+// 添加新密钥
+function handleAddKey() {
+  if (!newKey.value.token.trim()) {
+    message.warning('请输入 API 密钥');
+    return;
+  }
+
+  localConfig.value.apiKeys.push({
+    token: newKey.value.token.trim(),
+    alias: newKey.value.alias.trim()
+  });
+
+  message.success('密钥已添加');
+  showAddKeyModal.value = false;
+
+  // 重置表单
+  newKey.value = {
+    alias: '',
+    token: ''
+  };
+}
+
+// 删除密钥
+function removeKey(index) {
+  if (localConfig.value.apiKeys.length === 1) {
+    message.warning('至少需要保留一个密钥');
+    return;
+  }
+
+  localConfig.value.apiKeys.splice(index, 1);
+
+  // 调整选中索引
+  if (localConfig.value.selectedKeyIndex >= localConfig.value.apiKeys.length) {
+    localConfig.value.selectedKeyIndex = localConfig.value.apiKeys.length - 1;
+  }
+}
+
+// 选择密钥
+function selectKey(index) {
+  localConfig.value.selectedKeyIndex = index;
+}
+
+// 查看密钥
+function viewKey(index) {
+  if (needsVerification()) {
+    pendingAction.value = { type: 'view', index };
+    verifyPassword.value = '';
+    showVerifyModal.value = true;
+  } else {
+    doViewKey(index);
+  }
+}
+
+// 复制密钥
+function copyKey(index) {
+  if (needsVerification()) {
+    pendingAction.value = { type: 'copy', index };
+    verifyPassword.value = '';
+    showVerifyModal.value = true;
+  } else {
+    doCopyKey(index);
+  }
+}
+
+// 检查是否需要验证
+function needsVerification() {
+  return claudeStore.security?.password && claudeStore.security.password.trim() !== '';
+}
+
+// 执行查看密钥
+function doViewKey(index) {
+  viewedKey.value = localConfig.value.apiKeys[index].token;
+  showKeyModal.value = true;
+}
+
+// 执行复制密钥
+function doCopyKey(index) {
+  const key = localConfig.value.apiKeys[index].token;
+  copyToClipboard(key);
+}
+
+// 复制到剪贴板
+function copyToClipboard(text) {
+  if (!text || text.trim() === '') {
+    message.warning('密钥为空');
+    return;
+  }
+
+  navigator.clipboard.writeText(text).then(() => {
+    message.success('密钥已复制到剪贴板');
+  }).catch(() => {
+    message.error('复制失败');
+  });
+}
+
+// 验证密码
+function handleVerify() {
+  if (verifyPassword.value !== claudeStore.security.password) {
+    message.error('密码错误');
+    return;
+  }
+
+  showVerifyModal.value = false;
+
+  if (pendingAction.value) {
+    if (pendingAction.value.type === 'view') {
+      doViewKey(pendingAction.value.index);
+    } else if (pendingAction.value.type === 'copy') {
+      doCopyKey(pendingAction.value.index);
+    }
+    pendingAction.value = null;
+  }
+}
+
+// 保存安全设置
+function saveSecuritySettings() {
+  claudeStore.updateSecurity({
+    hint: securitySettings.value.hint,
+    password: securitySettings.value.password
+  });
+
+  message.success('安全设置已保存');
+  showSecurityModal.value = false;
 }
 </script>
 
@@ -253,6 +626,106 @@ function removeModel(index) {
   font-weight: 600;
 }
 
+/* API Keys Section */
+.api-keys-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.api-key-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  background: #fafafa;
+  border-radius: 8px;
+  border: 2px solid #e8e8e8;
+  transition: all 0.3s ease;
+  cursor: pointer;
+}
+
+.api-key-item:hover {
+  background: #f0f0f0;
+  border-color: #d9d9d9;
+}
+
+.api-key-item.selected {
+  background: #e6f0ff;
+  border-color: #667eea;
+  box-shadow: 0 2px 8px rgba(102, 126, 234, 0.15);
+}
+
+.api-key-item.selected .key-alias {
+  color: #667eea;
+  font-weight: 600;
+}
+
+.key-radio {
+  flex-shrink: 0;
+  pointer-events: none;
+}
+
+.key-alias {
+  min-width: 120px;
+  font-weight: 500;
+  color: #262626;
+}
+
+.key-token-masked {
+  flex: 1;
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+  font-size: 13px;
+  color: #8c8c8c;
+}
+
+.key-actions {
+  flex-shrink: 0;
+}
+
+.action-btn {
+  color: #595959 !important;
+}
+
+.action-btn:hover {
+  color: #667eea !important;
+  background: rgba(102, 126, 234, 0.1) !important;
+}
+
+.key-radio {
+  flex-shrink: 0;
+}
+
+.add-key-btn {
+  margin-top: 8px;
+  height: 40px;
+  border: 2px dashed #d9d9d9;
+  transition: all 0.3s ease;
+}
+
+.add-key-btn:hover {
+  border-color: #667eea;
+  color: #667eea;
+}
+
+/* 查看密钥显示区域 */
+.key-display-area {
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+  font-size: 14px;
+  color: #262626;
+  background: #fafafa;
+  border: 1px solid #d9d9d9;
+  border-radius: 4px;
+  padding: 8px 12px;
+  line-height: 1.6;
+}
+
+.key-display-area:focus {
+  border-color: #667eea;
+  box-shadow: 0 0 0 2px rgba(102, 126, 234, 0.1);
+}
+
+/* Models Section */
 .models-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(400px, 1fr));

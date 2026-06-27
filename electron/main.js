@@ -14,9 +14,18 @@ let mainWindow = null;
 let logcatProcess = null; // 存储 logcat 进程
 let claudeWindows = {}; // 存储 Claude PowerShell 窗口的进程 ID，按项目路径索引
 
+// 捕获未处理的异常
+process.on('uncaughtException', (error) => {
+  console.error('Uncaught Exception:', error);
+});
+
+process.on('unhandledRejection', (error) => {
+  console.error('Unhandled Rejection:', error);
+});
+
 // ==================== 缓存目录管理 ====================
-// 缓存根目录：项目安装目录下的 .wam-cache 文件夹
-const CACHE_ROOT = join(app.getAppPath(), '.wam-cache');
+// 缓存根目录：使用用户数据目录（打包后 app.getAppPath() 返回的是 app.asar 文件，不能写入）
+const CACHE_ROOT = join(app.getPath('userData'), '.wam-cache');
 const CACHE_DIRS = {
   claudeScripts: join(CACHE_ROOT, 'claude-scripts'),
   locks: join(CACHE_ROOT, 'locks'),
@@ -65,7 +74,20 @@ async function cleanupOldClaudeScripts() {
 }
 
 function createWindow() {
-  mainWindow = new BrowserWindow({
+  // 开发环境：加载 Vite 开发服务器
+  const isDev = !app.isPackaged;
+
+  // 配置窗口图标路径（打包后使用 resourcesPath）
+  let iconPath;
+  if (isDev) {
+    iconPath = join(__dirname, '../build/icon.png');
+  } else {
+    // 打包后，图标由 electron-builder 管理，不需要手动指定
+    // 或者使用：join(process.resourcesPath, 'icon.png')
+    iconPath = undefined;
+  }
+
+  const windowOptions = {
     width: 1400,
     height: 900,
     minWidth: 1200,
@@ -76,28 +98,53 @@ function createWindow() {
       preload: join(__dirname, 'preload.js')
     },
     autoHideMenuBar: true,
-    backgroundColor: '#1f1f1f',
-    icon: join(__dirname, '../build/icon.png')
-  });
+    backgroundColor: '#1f1f1f'
+  };
 
-  // 开发环境：加载 Vite 开发服务器
-  const isDev = !app.isPackaged;
+  // 只在开发环境设置图标
+  if (iconPath) {
+    windowOptions.icon = iconPath;
+  }
+
+  mainWindow = new BrowserWindow(windowOptions);
+
+  // 添加错误处理
+  mainWindow.webContents.on('did-fail-load', (event, errorCode, errorDescription) => {
+    console.error('Failed to load:', errorCode, errorDescription);
+  });
 
   if (isDev) {
     mainWindow.loadURL('http://localhost:5888');
     mainWindow.webContents.openDevTools();
   } else {
-    mainWindow.loadFile(join(__dirname, '../dist/index.html'));
+    // 打包后加载 dist/index.html
+    const indexPath = join(__dirname, '../dist/index.html');
+    console.log('Loading index.html from:', indexPath);
+    mainWindow.loadFile(indexPath).catch(err => {
+      console.error('Failed to load index.html:', err);
+    });
   }
 }
 
 app.whenReady().then(async () => {
-  // 初始化缓存目录
-  await ensureCacheDirs();
-  // 清理过期缓存
-  await cleanupOldClaudeScripts();
-  // 创建窗口
-  createWindow();
+  try {
+    console.log('App is ready, starting initialization...');
+    console.log('App path:', app.getAppPath());
+    console.log('Is packaged:', app.isPackaged);
+
+    // 初始化缓存目录
+    await ensureCacheDirs();
+    // 清理过期缓存
+    await cleanupOldClaudeScripts();
+    // 创建窗口
+    createWindow();
+    console.log('Window created successfully');
+  } catch (error) {
+    console.error('Failed to initialize app:', error);
+    // 显示错误对话框
+    dialog.showErrorBox('启动失败', `应用初始化失败：${error.message}\n\n请查看日志文件获取详细信息。`);
+    app.quit();
+  }
 });
 
 app.on('window-all-closed', () => {
@@ -784,7 +831,17 @@ ipcMain.handle('open-claude', async (event, projectPath) => {
     const claudeConfig = await mainWindow.webContents.executeJavaScript(`
       (() => {
         const stored = localStorage.getItem('wam_claude_config');
-        return stored ? JSON.parse(stored) : null;
+        if (!stored) return null;
+
+        const config = JSON.parse(stored);
+
+        // 获取当前选中的密钥
+        if (config.apiKeys && config.apiKeys.length > 0) {
+          const selectedIndex = config.selectedKeyIndex || 0;
+          config.authToken = config.apiKeys[selectedIndex]?.token || config.authToken;
+        }
+
+        return config;
       })()
     `);
 

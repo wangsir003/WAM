@@ -6,6 +6,10 @@ export const useClaudeStore = defineStore('claude', () => {
   const config = ref({
     baseUrl: 'https://ccxx.com',
     authToken: '',
+    apiKeys: [
+      { token: '', alias: '' }
+    ],
+    selectedKeyIndex: 0,
     models: [
       {
         id: 'claude-sonnet-4-6',
@@ -38,6 +42,12 @@ export const useClaudeStore = defineStore('claude', () => {
     ]
   });
 
+  // 安全设置
+  const security = ref({
+    hint: '',
+    password: ''
+  });
+
   // 更新配置
   function updateConfig(newConfig) {
     config.value = { ...config.value, ...newConfig };
@@ -62,6 +72,21 @@ export const useClaudeStore = defineStore('claude', () => {
     saveToStorage();
   }
 
+  // 更新安全设置
+  function updateSecurity(newSecurity) {
+    security.value = { ...security.value, ...newSecurity };
+    localStorage.setItem('wam_claude_security', JSON.stringify(security.value));
+  }
+
+  // 获取当前选中的密钥
+  function getCurrentToken() {
+    if (config.value.apiKeys && config.value.apiKeys.length > 0) {
+      const selectedIndex = config.value.selectedKeyIndex || 0;
+      return config.value.apiKeys[selectedIndex]?.token || config.value.authToken;
+    }
+    return config.value.authToken;
+  }
+
   // 持久化
   function saveToStorage() {
     localStorage.setItem('wam_claude_config', JSON.stringify(config.value));
@@ -71,12 +96,35 @@ export const useClaudeStore = defineStore('claude', () => {
     const stored = localStorage.getItem('wam_claude_config');
     if (stored) {
       const parsed = JSON.parse(stored);
+
+      // 迁移旧数据：如果没有 apiKeys，从 authToken 创建
+      if (!parsed.apiKeys && parsed.authToken) {
+        parsed.apiKeys = [{ token: parsed.authToken, alias: '' }];
+        parsed.selectedKeyIndex = 0;
+      } else if (parsed.apiKeys) {
+        // 确保每个 key 都有 alias 字段
+        parsed.apiKeys = parsed.apiKeys.map(key => ({
+          token: key.token || '',
+          alias: key.alias || ''
+        }));
+      }
+
       // 合并配置，保留默认模型列表如果没有存储的模型
       config.value = {
         ...config.value,
         ...parsed,
         models: parsed.models && parsed.models.length > 0 ? parsed.models : config.value.models
       };
+    }
+
+    // 加载安全设置
+    const storedSecurity = localStorage.getItem('wam_claude_security');
+    if (storedSecurity) {
+      try {
+        security.value = JSON.parse(storedSecurity);
+      } catch (e) {
+        console.error('Failed to load security settings:', e);
+      }
     }
   }
 
@@ -85,10 +133,13 @@ export const useClaudeStore = defineStore('claude', () => {
 
   return {
     config,
+    security,
     updateConfig,
     updateBaseUrl,
     updateAuthToken,
     updateModels,
+    updateSecurity,
+    getCurrentToken,
     saveToStorage,
     loadFromStorage
   };
