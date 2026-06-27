@@ -902,45 +902,59 @@ ipcMain.handle('open-claude', async (event, projectPath) => {
         console.log('锁文件中的PID:', pid);
         console.log('脚本路径:', scriptPath);
 
-        // 通过查找运行该脚本的进程来激活窗口
-        // 将激活脚本写入临时文件执行
+        // 通过窗口标题精确查找并激活窗口
         const activateScriptPath = join(CACHE_DIRS.temp, `activate-${projectName}-${Date.now()}.ps1`);
         const uniqueClassName = `Win32Activator${Date.now()}`;
+        const windowTitle = `Claude - ${projectName}`;
         const activateScriptContent = `$targetPid = ${pid}
+$windowTitle = "${windowTitle}"
 
 # 加载 Win32 API
 try {
   Add-Type @"
 using System;
 using System.Runtime.InteropServices;
+using System.Text;
 public class ${uniqueClassName} {
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
     [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
     [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd);
+    [DllImport("user32.dll")] public static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int count);
+    [DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProc enumProc, IntPtr lParam);
+    public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
 }
 "@
 } catch {
   exit 1
 }
 
-# 查找父进程窗口
-$currentPid = $targetPid
-for ($i = 0; $i -lt 5; $i++) {
-  $parentProc = Get-CimInstance Win32_Process -Filter "ProcessId=$currentPid" -ErrorAction SilentlyContinue
-  if (-not $parentProc) { break }
+# 查找匹配标题的窗口
+\$found = \$false
+\$targetHwnd = [IntPtr]::Zero
 
-  $currentPid = $parentProc.ParentProcessId
-  $proc = Get-Process -Id $currentPid -ErrorAction SilentlyContinue
+[${uniqueClassName}]::EnumWindows({
+    param([IntPtr]\$hwnd, [IntPtr]\$lParam)
 
-  if ($proc -and $proc.MainWindowHandle -ne 0) {
-    $hwnd = $proc.MainWindowHandle
+    \$sb = New-Object System.Text.StringBuilder 256
+    [${uniqueClassName}]::GetWindowText(\$hwnd, \$sb, 256) | Out-Null
+    \$title = \$sb.ToString()
 
-    if ([${uniqueClassName}]::IsIconic($hwnd)) {
-      [${uniqueClassName}]::ShowWindow($hwnd, 9) | Out-Null
+    if (\$title -eq \$windowTitle) {
+        \$script:found = \$true
+        \$script:targetHwnd = \$hwnd
+        return \$false  # 停止枚举
     }
-    [${uniqueClassName}]::SetForegroundWindow($hwnd) | Out-Null
+    return \$true  # 继续枚举
+}, [IntPtr]::Zero) | Out-Null
+
+if (\$found -and \$targetHwnd -ne [IntPtr]::Zero) {
+    # 找到窗口，激活它
+    if ([${uniqueClassName}]::IsIconic(\$targetHwnd)) {
+        [${uniqueClassName}]::ShowWindow(\$targetHwnd, 9) | Out-Null
+        Start-Sleep -Milliseconds 100
+    }
+    [${uniqueClassName}]::SetForegroundWindow(\$targetHwnd) | Out-Null
     exit 0
-  }
 }
 
 exit 1
@@ -982,33 +996,53 @@ exit 1
             // 检查进程是否还存在
             try {
               process.kill(pid, 0); // 发送信号0只检查进程是否存在，不杀死它
-              console.log('进程仍然存在，虽然激活失败，但尝试简单的激活方法');
+              console.log('进程仍然存在，使用备用方法激活窗口');
 
-              // 使用 PowerShell 和 Win32 API 激活窗口（包括最小化的窗口）
+              // 使用备用方法：通过窗口标题查找并激活
               const psScript = join(CACHE_DIRS.temp, `restore-${projectName}-${Date.now()}.ps1`);
               const psContent = `
-$targetPid = ${pid}
-$parentPid = (Get-CimInstance Win32_Process -Filter "ProcessId=$targetPid" -ErrorAction SilentlyContinue).ParentProcessId
-if (-not $parentPid) { exit 1 }
-
-$parentProc = Get-Process -Id $parentPid -ErrorAction SilentlyContinue
-if (-not $parentProc -or $parentProc.MainWindowHandle -eq 0) { exit 1 }
+$windowTitle = "Claude - ${projectName}"
 
 $code = @'
 [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
 [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
 [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd);
+[DllImport("user32.dll", CharSet = CharSet.Auto)] public static extern int GetWindowText(IntPtr hWnd, System.Text.StringBuilder text, int count);
+[DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProc enumProc, IntPtr lParam);
+public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
 '@
 
-Add-Type -MemberDefinition $code -Name WinAPI -Namespace Win32 -ErrorAction SilentlyContinue
+Add-Type -MemberDefinition $code -Name WinAPI2 -Namespace Win32 -ErrorAction SilentlyContinue
 
-$hwnd = $parentProc.MainWindowHandle
-if ([Win32.WinAPI]::IsIconic($hwnd)) {
-    [Win32.WinAPI]::ShowWindow($hwnd, 9) | Out-Null
-    Start-Sleep -Milliseconds 100
+# 查找匹配标题的窗口
+$found = $false
+$targetHwnd = [IntPtr]::Zero
+
+[Win32.WinAPI2]::EnumWindows({
+    param([IntPtr]$hwnd, [IntPtr]$lParam)
+
+    $sb = New-Object System.Text.StringBuilder 256
+    [Win32.WinAPI2]::GetWindowText($hwnd, $sb, 256) | Out-Null
+    $title = $sb.ToString()
+
+    if ($title -eq $windowTitle) {
+        $script:found = $true
+        $script:targetHwnd = $hwnd
+        return $false
+    }
+    return $true
+}, [IntPtr]::Zero) | Out-Null
+
+if ($found -and $targetHwnd -ne [IntPtr]::Zero) {
+    if ([Win32.WinAPI2]::IsIconic($targetHwnd)) {
+        [Win32.WinAPI2]::ShowWindow($targetHwnd, 9) | Out-Null
+        Start-Sleep -Milliseconds 100
+    }
+    [Win32.WinAPI2]::SetForegroundWindow($targetHwnd) | Out-Null
+    exit 0
 }
-[Win32.WinAPI]::SetForegroundWindow($hwnd) | Out-Null
-exit 0
+
+exit 1
 `;
 
               try {

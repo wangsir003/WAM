@@ -282,7 +282,7 @@ function performAppOperation(operation) {
           const results = await window.electronAPI.appOperation(
             operation,
             project.value.packageName,
-            projectStore.selectedDevices
+            [...projectStore.selectedDevices] // 转换为普通数组
           );
 
           const successCount = results.filter(r => r.success).length;
@@ -307,7 +307,7 @@ async function stopApp() {
     const results = await window.electronAPI.appOperation(
       'stop',
       project.value.packageName,
-      projectStore.selectedDevices
+      [...projectStore.selectedDevices] // 转换为普通数组
     );
 
     const successCount = results.filter(r => r.success).length;
