@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Simple Test</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 20px;
+      background: #1f1f1f;
+      color: #fff;
+      font-family: Arial;
+    }
+    .box {
+      background: #2d2d2d;
+      padding: 20px;
+      border-radius: 8px;
+      margin: 20px 0;
+    }
+  </style>
+</head>
+<body>
+  <h1>WAM Simple Test</h1>
+  <div class="box">
+    <h2>Test 1: Basic HTML</h2>
+    <p>✓ If you see this, HTML rendering works</p>
+  </div>
+  
+  <div id="app"></div>
+  
+  <script type="module">
+    console.log('Test script loaded');
+    
+    import { createApp, h } from 'vue';
+    
+    const App = {
+      setup() {
+        return () => h('div', { class: 'box' }, [
+          h('h2', 'Test 2: Vue Rendering'),
+          h('p', '✓ If you see this, Vue is working!')
+        ]);
+      }
+    };
+    
+    createApp(App).mount('#app');
+    console.log('Vue app mounted');
+  </script>
+</body>
+</html>

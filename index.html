@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="icon" type="image/png" href="/src/assets/icon.png">
+  <title>WAM - Windows Android-project Manager</title>
+  <style>
+    /* 基础样式，确保页面可见 */
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+    }
+
+    #app {
+      width: 100%;
+      height: 100%;
+    }
+
+    /* 加载指示器 */
+    .loading {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      font-family: Arial, sans-serif;
+      background: #1f1f1f;
+      color: #fff;
+    }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <div class="loading">Loading WAM...</div>
+  </div>
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>

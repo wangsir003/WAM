@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WAM - Test</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 20px;
+      font-family: Arial, sans-serif;
+    }
+    #status {
+      padding: 20px;
+      background: #f0f0f0;
+      border-radius: 8px;
+      margin-bottom: 20px;
+    }
+    .error {
+      color: red;
+      background: #ffe0e0;
+      padding: 10px;
+      margin: 10px 0;
+      border-radius: 4px;
+    }
+    .success {
+      color: green;
+      background: #e0ffe0;
+      padding: 10px;
+      margin: 10px 0;
+      border-radius: 4px;
+    }
+  </style>
+</head>
+<body>
+  <div id="status">
+    <h2>WAM 启动诊断</h2>
+    <div id="messages"></div>
+  </div>
+  <div id="app"></div>
+
+  <script type="module">
+    const messages = document.getElementById('messages');
+
+    function log(msg, type = 'info') {
+      const div = document.createElement('div');
+      div.className = type;
+      div.textContent = msg;
+      messages.appendChild(div);
+      console.log(msg);
+    }
+
+    try {
+      log('Step 1: Loading Vue...', 'info');
+      const { createApp } = await import('vue');
+      log('✓ Vue loaded successfully', 'success');
+
+      log('Step 2: Loading Pinia...', 'info');
+      const { createPinia } = await import('pinia');
+      log('✓ Pinia loaded successfully', 'success');
+
+      log('Step 3: Loading Ant Design Vue...', 'info');
+      const Antd = await import('ant-design-vue');
+      log('✓ Ant Design Vue loaded successfully', 'success');
+
+      log('Step 4: Loading App component...', 'info');
+      const App = await import('./App.vue');
+      log('✓ App component loaded successfully', 'success');
+
+      log('Step 5: Creating Vue app...', 'info');
+      const app = createApp(App.default);
+      const pinia = createPinia();
+
+      log('Step 6: Installing plugins...', 'info');
+      app.use(pinia);
+      app.use(Antd.default);
+
+      log('Step 7: Mounting app...', 'info');
+      app.mount('#app');
+      log('✓ App mounted successfully!', 'success');
+
+      setTimeout(() => {
+        messages.innerHTML = '<div class="success"><h3>✓ 应用启动成功！</h3></div>';
+      }, 1000);
+
+    } catch (error) {
+      log('✗ Error: ' + error.message, 'error');
+      log('Stack: ' + error.stack, 'error');
+    }
+  </script>
+</body>
+</html>
