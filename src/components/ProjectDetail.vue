@@ -47,7 +47,7 @@
           :icon="h(FileTextOutlined)"
           :loading="capturingLog"
           @click="captureLog"
-          :disabled="!project || !project.packageName || !hasSelectedDevices"
+          :disabled="!hasSelectedDevices"
         >
           抓取日志
         </a-button>
@@ -341,19 +341,96 @@ async function stopApp() {
 
 // 抓取日志
 async function captureLog() {
-  if (!project.value || !project.value.packageName) {
-    message.warning('请先选择一个包含包名的项目');
-    return;
-  }
-
   if (!hasSelectedDevices.value) {
     message.warning('请先选择至少一个设备');
     return;
   }
 
+  let packageName = null;
+  let appName = null;
+
+  // 如果有选中的项目，使用项目的包名
+  if (project.value && project.value.packageName) {
+    packageName = project.value.packageName;
+    appName = project.value.customName;
+  } else {
+    // 未选择项目或项目没有包名，让用户从已安装应用中选择
+    try {
+      const loadingMsg = message.loading('正在获取已安装应用列表...', 0);
+
+      const result = await window.electronAPI.getInstalledApps(projectStore.selectedDevices[0]);
+
+      loadingMsg();
+
+      if (!result.success || !result.apps || result.apps.length === 0) {
+        message.error('获取已安装应用失败: ' + (result.error || '未找到应用'));
+        return;
+      }
+
+      // 显示应用选择对话框
+      let selectedPackage = result.apps[0]?.packageName; // 默认选中第一个
+
+      const selectedApp = await new Promise((resolve) => {
+        const radioGroupRef = ref(selectedPackage);
+
+        Modal.confirm({
+          title: '选择要抓取日志的应用',
+          width: 600,
+          content: h('div', { style: 'max-height: 400px; overflow-y: auto;' }, [
+            h('p', { style: 'margin-bottom: 12px; color: #666;' }, `找到 ${result.apps.length} 个已安装应用，请选择一个：`),
+            h('a-radio-group', {
+              value: radioGroupRef.value,
+              'onUpdate:value': (val) => {
+                radioGroupRef.value = val;
+                selectedPackage = val;
+              },
+              style: 'width: 100%; display: block;'
+            }, result.apps.map(app =>
+              h('div', {
+                key: app.packageName,
+                style: 'margin-bottom: 8px; padding: 8px; border: 1px solid #f0f0f0; border-radius: 4px;'
+              }, [
+                h('a-radio', { value: app.packageName }, [
+                  h('div', { style: 'display: inline-block; margin-left: 8px;' }, [
+                    h('div', { style: 'font-weight: 500;' }, app.appName || app.packageName),
+                    h('div', { style: 'font-size: 12px; color: #999;' }, app.packageName)
+                  ])
+                ])
+              ])
+            ))
+          ]),
+          okText: '确定',
+          cancelText: '取消',
+          onOk: () => {
+            if (selectedPackage) {
+              const selected = result.apps.find(app => app.packageName === selectedPackage);
+              resolve(selected);
+            } else {
+              message.warning('请选择一个应用');
+              resolve(null);
+            }
+          },
+          onCancel: () => {
+            resolve(null);
+          }
+        });
+      });
+
+      if (!selectedApp) {
+        return;
+      }
+
+      packageName = selectedApp.packageName;
+      appName = selectedApp.appName || selectedApp.packageName;
+    } catch (error) {
+      message.error('获取应用列表失败: ' + error.message);
+      return;
+    }
+  }
+
   try {
     // 让用户选择保存路径和文件名
-    const savePath = await window.electronAPI.selectLogSavePath(project.value.customName);
+    const savePath = await window.electronAPI.selectLogSavePath(appName || packageName);
 
     if (!savePath) {
       return;
@@ -363,7 +440,7 @@ async function captureLog() {
 
     // 开始抓取日志
     const result = await window.electronAPI.startCaptureLog(
-      project.value.packageName,
+      packageName,
       projectStore.selectedDevices[0], // 使用第一个选中的设备
       savePath
     );
@@ -376,7 +453,7 @@ async function captureLog() {
       const modal = Modal.info({
         title: '日志抓取中',
         content: h('div', [
-          h('p', '正在抓取日志，请稍候...'),
+          h('p', `正在抓取应用日志: ${appName || packageName}`),
           h('p', { style: 'font-size: 24px; font-weight: bold; color: #1890ff; margin: 20px 0;' }, '00:00 / 03:00'),
           h('p', { style: 'color: #666; font-size: 12px;' }, '最多支持抓取 3 分钟日志')
         ]),
@@ -403,7 +480,7 @@ async function captureLog() {
         // 更新对话框内容
         modal.update({
           content: h('div', [
-            h('p', '正在抓取日志，请稍候...'),
+            h('p', `正在抓取应用日志: ${appName || packageName}`),
             h('p', { style: 'font-size: 24px; font-weight: bold; color: #1890ff; margin: 20px 0;' }, timeText),
             h('p', { style: 'color: #666; font-size: 12px;' }, '最多支持抓取 3 分钟日志')
           ])

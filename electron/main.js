@@ -1647,6 +1647,86 @@ ipcMain.handle('select-log-save-path', async (event, projectName) => {
   return result.canceled ? null : result.filePath;
 });
 
+// 15.5. 获取设备上已安装的应用列表
+ipcMain.handle('get-installed-apps', async (event, deviceId) => {
+  try {
+    console.log('获取设备已安装应用:', deviceId);
+
+    // 获取所有第三方应用包名
+    const result = await executeCommand('adb', ['-s', deviceId, 'shell', 'pm', 'list', 'packages', '-3']);
+
+    if (!result || result.trim().length === 0) {
+      return {
+        success: false,
+        error: '未找到已安装的应用'
+      };
+    }
+
+    // 解析包名列表
+    const packages = result
+      .split('\n')
+      .map(line => line.trim().replace('package:', ''))
+      .filter(pkg => pkg.length > 0);
+
+    console.log('找到应用数量:', packages.length);
+
+    // 获取每个应用的名称（尝试从 dumpsys package 获取）
+    const apps = [];
+    for (const packageName of packages) {
+      try {
+        // 尝试获取应用标签（应用名称）
+        const labelResult = await executeCommand('adb', [
+          '-s',
+          deviceId,
+          'shell',
+          'dumpsys',
+          'package',
+          packageName,
+          '|',
+          'grep',
+          '-E',
+          '"labelRes|label="'
+        ]);
+
+        let appName = packageName; // 默认使用包名
+
+        // 简单解析，如果失败就使用包名
+        if (labelResult) {
+          // 这里简化处理，实际可能需要更复杂的解析
+          const match = labelResult.match(/label=([^\s]+)/);
+          if (match && match[1]) {
+            appName = match[1];
+          }
+        }
+
+        apps.push({
+          packageName: packageName,
+          appName: appName !== packageName ? appName : null
+        });
+      } catch (error) {
+        // 获取应用名称失败，仍然添加（只有包名）
+        apps.push({
+          packageName: packageName,
+          appName: null
+        });
+      }
+    }
+
+    console.log('成功解析应用:', apps.length);
+
+    return {
+      success: true,
+      apps: apps
+    };
+  } catch (error) {
+    console.error('获取已安装应用失败:', error);
+    return {
+      success: false,
+      error: error.message
+    };
+  }
+});
+
 // 16. 开始抓取日志（持续3分钟或手动停止）
 ipcMain.handle('start-capture-log', async (event, { packageName, deviceId, savePath }) => {
   try {
@@ -1668,33 +1748,73 @@ ipcMain.handle('start-capture-log', async (event, { packageName, deviceId, saveP
       data: `正在启动日志抓取...\n设备: ${deviceId}\n包名: ${packageName}\n`
     });
 
+    // 首先获取应用的 PID
+    let pid = null;
+    try {
+      const pidResult = await executeCommand('adb', ['-s', deviceId, 'shell', 'pidof', packageName]);
+      pid = pidResult.trim();
+      console.log('应用 PID:', pid);
+
+      if (pid) {
+        mainWindow.webContents.send('log-output', {
+          type: 'info',
+          data: `找到应用进程 PID: ${pid}\n`
+        });
+      }
+    } catch (error) {
+      console.log('应用未运行，将抓取所有日志并过滤包名');
+      mainWindow.webContents.send('log-output', {
+        type: 'warning',
+        data: `应用未运行，将抓取包含 "${packageName}" 的日志\n`
+      });
+    }
+
     // 创建文件写入流
     captureLogStream = createWriteStream(savePath, { flags: 'w', encoding: 'utf-8' });
 
-    // 启动 logcat 进程（持续抓取）
-    captureLogProcess = spawn('adb', [
-      '-s',
-      deviceId,
-      'logcat',
-      '-v',
-      'time',
-      '*:V'  // 抓取所有级别日志，包含包名过滤将在输出时处理
-    ]);
-
     let lineCount = 0;
+
+    // 启动 logcat 进程（持续抓取）
+    if (pid) {
+      // 如果有 PID，只抓取该进程的日志
+      captureLogProcess = spawn('adb', [
+        '-s',
+        deviceId,
+        'logcat',
+        '-v',
+        'time',
+        '--pid=' + pid
+      ]);
+    } else {
+      // 没有 PID，抓取所有日志，然后过滤
+      captureLogProcess = spawn('adb', [
+        '-s',
+        deviceId,
+        'logcat',
+        '-v',
+        'time',
+        '*:V'
+      ]);
+    }
 
     // 处理输出
     captureLogProcess.stdout.on('data', (data) => {
       const output = data.toString();
-      const lines = output.split('\n');
 
-      // 过滤包含包名的日志行
-      lines.forEach(line => {
-        if (line.includes(packageName)) {
-          captureLogStream.write(line + '\n');
-          lineCount++;
-        }
-      });
+      if (pid) {
+        // 有 PID，直接写入所有行
+        captureLogStream.write(output);
+        lineCount += output.split('\n').filter(line => line.trim().length > 0).length;
+      } else {
+        // 没有 PID，过滤包含包名的日志行
+        const lines = output.split('\n');
+        lines.forEach(line => {
+          if (line.includes(packageName)) {
+            captureLogStream.write(line + '\n');
+            lineCount++;
+          }
+        });
+      }
     });
 
     // 处理错误

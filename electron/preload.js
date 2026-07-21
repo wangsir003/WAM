@@ -38,6 +38,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // 抓取日志
   selectLogSavePath: (projectName) => ipcRenderer.invoke('select-log-save-path', projectName),
+  getInstalledApps: (deviceId) => ipcRenderer.invoke('get-installed-apps', deviceId),
   startCaptureLog: (packageName, deviceId, savePath) =>
     ipcRenderer.invoke('start-capture-log', { packageName, deviceId, savePath }),
   stopCaptureLog: () => ipcRenderer.invoke('stop-capture-log'),
