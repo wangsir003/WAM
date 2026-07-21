@@ -352,45 +352,112 @@ async function captureLog() {
   }
 
   try {
-    capturingLog.value = true;
-
     // 让用户选择保存路径和文件名
     const savePath = await window.electronAPI.selectLogSavePath(project.value.customName);
 
     if (!savePath) {
-      capturingLog.value = false;
       return;
     }
 
-    message.info('正在抓取日志，请稍候...');
+    capturingLog.value = true;
 
-    // 调用后端抓取日志
-    const result = await window.electronAPI.captureLog(
+    // 开始抓取日志
+    const result = await window.electronAPI.startCaptureLog(
       project.value.packageName,
       projectStore.selectedDevices[0], // 使用第一个选中的设备
       savePath
     );
 
     if (result.success) {
-      message.success(`日志已保存到: ${savePath}`);
+      // 显示抓取进度对话框
+      let elapsedSeconds = 0;
+      const maxSeconds = 180; // 3分钟
 
-      // 询问是否打开日志文件
-      Modal.confirm({
-        title: '日志抓取完成',
-        content: `日志文件已保存，是否打开查看？`,
-        okText: '打开',
-        cancelText: '关闭',
-        onOk: () => {
-          window.electronAPI.openLogFile(savePath);
+      const modal = Modal.info({
+        title: '日志抓取中',
+        content: h('div', [
+          h('p', '正在抓取日志，请稍候...'),
+          h('p', { style: 'font-size: 24px; font-weight: bold; color: #1890ff; margin: 20px 0;' }, '00:00 / 03:00'),
+          h('p', { style: 'color: #666; font-size: 12px;' }, '最多支持抓取 3 分钟日志')
+        ]),
+        okText: '停止抓取',
+        onOk: async () => {
+          // 用户点击停止
+          await window.electronAPI.stopCaptureLog();
+          capturingLog.value = false;
+          message.success('日志抓取已停止');
         }
       });
+
+      // 更新计时器
+      const timer = setInterval(() => {
+        elapsedSeconds++;
+
+        const minutes = Math.floor(elapsedSeconds / 60);
+        const seconds = elapsedSeconds % 60;
+        const totalMinutes = Math.floor(maxSeconds / 60);
+        const totalSeconds = maxSeconds % 60;
+
+        const timeText = `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')} / ${String(totalMinutes).padStart(2, '0')}:${String(totalSeconds).padStart(2, '0')}`;
+
+        // 更新对话框内容
+        modal.update({
+          content: h('div', [
+            h('p', '正在抓取日志，请稍候...'),
+            h('p', { style: 'font-size: 24px; font-weight: bold; color: #1890ff; margin: 20px 0;' }, timeText),
+            h('p', { style: 'color: #666; font-size: 12px;' }, '最多支持抓取 3 分钟日志')
+          ])
+        });
+
+        // 到达3分钟自动停止
+        if (elapsedSeconds >= maxSeconds) {
+          clearInterval(timer);
+          window.electronAPI.stopCaptureLog();
+          modal.destroy();
+          capturingLog.value = false;
+
+          message.success('日志抓取完成（已达到3分钟上限）');
+
+          // 询问是否打开日志文件
+          Modal.confirm({
+            title: '日志抓取完成',
+            content: `日志文件已保存到:\n${savePath}`,
+            okText: '打开查看',
+            cancelText: '关闭',
+            onOk: () => {
+              window.electronAPI.openLogFile(savePath);
+            }
+          });
+        }
+      }, 1000);
+
+      // 监听抓取完成事件（用户手动停止或出错）
+      window.electronAPI.onCaptureLogComplete((result) => {
+        clearInterval(timer);
+        modal.destroy();
+        capturingLog.value = false;
+
+        if (result.stopped) {
+          // 用户手动停止
+          Modal.confirm({
+            title: '日志抓取已停止',
+            content: `日志文件已保存到:\n${savePath}`,
+            okText: '打开查看',
+            cancelText: '关闭',
+            onOk: () => {
+              window.electronAPI.openLogFile(savePath);
+            }
+          });
+        }
+      });
+
     } else {
-      message.error('抓取日志失败: ' + result.error);
+      capturingLog.value = false;
+      message.error('启动日志抓取失败: ' + result.error);
     }
   } catch (error) {
-    message.error('抓取日志失败: ' + error.message);
-  } finally {
     capturingLog.value = false;
+    message.error('抓取日志失败: ' + error.message);
   }
 }
 

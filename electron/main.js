@@ -2,6 +2,7 @@ import { app, BrowserWindow, ipcMain, dialog, shell } from 'electron';
 import { spawn, exec } from 'child_process';
 import { createHash } from 'crypto';
 import { readFile, readdir, stat, writeFile, mkdir, unlink } from 'fs/promises';
+import { createWriteStream } from 'fs';
 import { join, basename } from 'path';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
@@ -16,6 +17,8 @@ const __dirname = dirname(__filename);
 
 let mainWindow = null;
 let logcatProcess = null; // 存储 logcat 进程
+let captureLogProcess = null; // 存储日志抓取进程
+let captureLogStream = null; // 存储日志文件写入流
 let claudeWindows = {}; // 存储 Claude PowerShell 窗口的进程 ID，按项目路径索引
 
 // ==================== ADB 路径管理 ====================
@@ -919,6 +922,13 @@ app.on('before-quit', () => {
   if (logcatProcess) {
     logcatProcess.kill();
   }
+  // 清理日志抓取进程
+  if (captureLogProcess) {
+    captureLogProcess.kill();
+  }
+  if (captureLogStream) {
+    captureLogStream.end();
+  }
   // 清理所有 Claude 窗口进程
   for (const pid of Object.values(claudeWindows)) {
     try {
@@ -1637,101 +1647,101 @@ ipcMain.handle('select-log-save-path', async (event, projectName) => {
   return result.canceled ? null : result.filePath;
 });
 
-// 16. 抓取日志
-ipcMain.handle('capture-log', async (event, { packageName, deviceId, savePath }) => {
+// 16. 开始抓取日志（持续3分钟或手动停止）
+ipcMain.handle('start-capture-log', async (event, { packageName, deviceId, savePath }) => {
   try {
     console.log('开始抓取日志:', { packageName, deviceId, savePath });
 
+    // 如果已有抓取进程在运行，先停止
+    if (captureLogProcess) {
+      captureLogProcess.kill();
+      captureLogProcess = null;
+    }
+
+    if (captureLogStream) {
+      captureLogStream.end();
+      captureLogStream = null;
+    }
+
     mainWindow.webContents.send('log-output', {
       type: 'info',
-      data: `正在抓取设备 ${deviceId} 的日志...\n`
+      data: `正在启动日志抓取...\n设备: ${deviceId}\n包名: ${packageName}\n`
     });
 
-    // 首先获取应用的 PID
-    let pid = null;
-    try {
-      const pidResult = await executeCommand('adb', ['-s', deviceId, 'shell', 'pidof', packageName]);
-      pid = pidResult.trim();
-      console.log('应用 PID:', pid);
-    } catch (error) {
-      console.log('无法获取应用 PID，将抓取所有日志并按包名过滤');
-    }
+    // 创建文件写入流
+    captureLogStream = createWriteStream(savePath, { flags: 'w', encoding: 'utf-8' });
 
-    // 抓取日志
-    let logContent = '';
-    if (pid) {
-      // 如果有 PID，只抓取该进程的日志
-      mainWindow.webContents.send('log-output', {
-        type: 'info',
-        data: `找到应用进程 PID: ${pid}\n`
-      });
+    // 启动 logcat 进程（持续抓取）
+    captureLogProcess = spawn('adb', [
+      '-s',
+      deviceId,
+      'logcat',
+      '-v',
+      'time',
+      '*:V'  // 抓取所有级别日志，包含包名过滤将在输出时处理
+    ]);
 
-      logContent = await executeCommand('adb', [
-        '-s',
-        deviceId,
-        'logcat',
-        '-d',
-        '-v',
-        'time',
-        '--pid=' + pid
-      ]);
-    } else {
-      // 没有 PID，抓取所有日志并按包名过滤
-      mainWindow.webContents.send('log-output', {
-        type: 'info',
-        data: `应用未运行，将抓取包含 "${packageName}" 的所有日志\n`
-      });
+    let lineCount = 0;
 
-      const allLogs = await executeCommand('adb', [
-        '-s',
-        deviceId,
-        'logcat',
-        '-d',
-        '-v',
-        'time'
-      ]);
+    // 处理输出
+    captureLogProcess.stdout.on('data', (data) => {
+      const output = data.toString();
+      const lines = output.split('\n');
 
       // 过滤包含包名的日志行
-      logContent = allLogs
-        .split('\n')
-        .filter(line => line.includes(packageName))
-        .join('\n');
-    }
+      lines.forEach(line => {
+        if (line.includes(packageName)) {
+          captureLogStream.write(line + '\n');
+          lineCount++;
+        }
+      });
+    });
 
-    if (!logContent || logContent.trim().length === 0) {
+    // 处理错误
+    captureLogProcess.stderr.on('data', (data) => {
+      console.error('logcat stderr:', data.toString());
+    });
+
+    // 进程退出
+    captureLogProcess.on('close', (code) => {
+      console.log('logcat 进程已关闭，退出码:', code);
+
+      if (captureLogStream) {
+        captureLogStream.end();
+        captureLogStream = null;
+      }
+
       mainWindow.webContents.send('log-output', {
-        type: 'warning',
-        data: '未找到相关日志\n'
+        type: 'success',
+        data: `日志抓取已停止，共抓取 ${lineCount} 行\n保存到: ${savePath}\n`
       });
 
-      return {
-        success: false,
-        error: '未找到相关日志，请确保应用正在运行或曾经运行过'
-      };
-    }
+      // 通知前端抓取完成
+      mainWindow.webContents.send('capture-log-complete', {
+        success: true,
+        stopped: true,
+        path: savePath,
+        lineCount: lineCount
+      });
 
-    // 写入文件
-    await writeFile(savePath, logContent, 'utf-8');
-
-    const lineCount = logContent.split('\n').length;
-    console.log('日志已保存到:', savePath, '行数:', lineCount);
+      captureLogProcess = null;
+    });
 
     mainWindow.webContents.send('log-output', {
       type: 'success',
-      data: `日志已成功保存到: ${savePath}\n共 ${lineCount} 行\n`
+      data: '日志抓取已启动，最多抓取 3 分钟\n'
     });
 
     return {
       success: true,
-      path: savePath,
-      lineCount: lineCount
+      message: '日志抓取已启动'
     };
   } catch (error) {
-    console.error('抓取日志失败:', error);
+    console.error('启动日志抓取失败:', error);
 
     mainWindow.webContents.send('log-output', {
       type: 'error',
-      data: `抓取日志失败: ${error.message}\n`
+      data: `启动日志抓取失败: ${error.message}\n`
     });
 
     return {
@@ -1741,7 +1751,35 @@ ipcMain.handle('capture-log', async (event, { packageName, deviceId, savePath })
   }
 });
 
-// 17. 打开日志文件
+// 17. 停止抓取日志
+ipcMain.handle('stop-capture-log', async () => {
+  try {
+    if (captureLogProcess) {
+      captureLogProcess.kill();
+      captureLogProcess = null;
+    }
+
+    if (captureLogStream) {
+      captureLogStream.end();
+      captureLogStream = null;
+    }
+
+    console.log('日志抓取已手动停止');
+
+    return {
+      success: true,
+      message: '日志抓取已停止'
+    };
+  } catch (error) {
+    console.error('停止日志抓取失败:', error);
+    return {
+      success: false,
+      error: error.message
+    };
+  }
+});
+
+// 18. 打开日志文件
 ipcMain.handle('open-log-file', async (event, filePath) => {
   try {
     await shell.openPath(filePath);

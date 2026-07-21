@@ -38,9 +38,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // 抓取日志
   selectLogSavePath: (projectName) => ipcRenderer.invoke('select-log-save-path', projectName),
-  captureLog: (packageName, deviceId, savePath) =>
-    ipcRenderer.invoke('capture-log', { packageName, deviceId, savePath }),
+  startCaptureLog: (packageName, deviceId, savePath) =>
+    ipcRenderer.invoke('start-capture-log', { packageName, deviceId, savePath }),
+  stopCaptureLog: () => ipcRenderer.invoke('stop-capture-log'),
   openLogFile: (filePath) => ipcRenderer.invoke('open-log-file', filePath),
+  onCaptureLogComplete: (callback) => {
+    ipcRenderer.on('capture-log-complete', (event, data) => callback(data));
+  },
 
   // 日志监听
   onLogOutput: (callback) => {
