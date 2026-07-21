@@ -366,13 +366,12 @@ async function captureLog() {
       }
 
       // 显示应用选择对话框
-      let selectedPackage = result.apps[0]?.packageName; // 默认选中第一个
-
       const selectedApp = await new Promise((resolve) => {
-        Modal.confirm({
-          title: '选择要抓取日志的应用',
-          width: 700,
-          content: h('div', { style: 'max-height: 500px; overflow-y: auto;' }, [
+        let selectedPackage = result.apps[0]?.packageName; // 默认选中第一个
+        let modalInstance = null;
+
+        const renderContent = () => {
+          return h('div', { style: 'max-height: 500px; overflow-y: auto;' }, [
             h('p', { style: 'margin-bottom: 16px; color: #666; font-size: 13px;' },
               `在设备上找到 ${result.apps.length} 个第三方应用，请选择一个进行日志抓取：`
             ),
@@ -389,20 +388,22 @@ async function captureLog() {
                     backgroundColor: selectedPackage === app.packageName ? '#e6f7ff' : '#fff',
                     display: 'flex',
                     alignItems: 'center',
-                    gap: '12px'
+                    gap: '12px',
+                    userSelect: 'none'
                   },
                   onClick: () => {
                     selectedPackage = app.packageName;
+                    // 手动更新 modal 内容
+                    modalInstance.update({
+                      content: renderContent()
+                    });
                   }
                 }, [
                   h('input', {
                     type: 'radio',
                     name: 'app-select',
                     checked: selectedPackage === app.packageName,
-                    style: 'cursor: pointer; flex-shrink: 0;',
-                    onClick: (e) => {
-                      e.stopPropagation();
-                    }
+                    style: 'cursor: pointer; flex-shrink: 0; pointer-events: none;'
                   }),
                   h('div', {
                     style: 'flex: 1; font-size: 14px; color: #262626; font-family: monospace; word-break: break-all;'
@@ -410,7 +411,13 @@ async function captureLog() {
                 ])
               )
             )
-          ]),
+          ]);
+        };
+
+        modalInstance = Modal.confirm({
+          title: '选择要抓取日志的应用',
+          width: 700,
+          content: renderContent(),
           okText: '确定抓取',
           cancelText: '取消',
           onOk: () => {
@@ -433,7 +440,6 @@ async function captureLog() {
       }
 
       packageName = selectedApp.packageName;
-      appName = selectedApp.appName || selectedApp.packageName;
     } catch (error) {
       message.error('获取应用列表失败: ' + error.message);
       return;
@@ -442,7 +448,7 @@ async function captureLog() {
 
   try {
     // 让用户选择保存路径和文件名
-    const savePath = await window.electronAPI.selectLogSavePath(appName || packageName);
+    const savePath = await window.electronAPI.selectLogSavePath(packageName);
 
     if (!savePath) {
       return;
@@ -465,7 +471,7 @@ async function captureLog() {
       const modal = Modal.info({
         title: '日志抓取中',
         content: h('div', [
-          h('p', `正在抓取应用日志: ${appName || packageName}`),
+          h('p', `正在抓取应用日志: ${packageName}`),
           h('p', { style: 'font-size: 24px; font-weight: bold; color: #1890ff; margin: 20px 0;' }, '00:00 / 03:00'),
           h('p', { style: 'color: #666; font-size: 12px;' }, '最多支持抓取 3 分钟日志')
         ]),
@@ -492,7 +498,7 @@ async function captureLog() {
         // 更新对话框内容
         modal.update({
           content: h('div', [
-            h('p', `正在抓取应用日志: ${appName || packageName}`),
+            h('p', `正在抓取应用日志: ${packageName}`),
             h('p', { style: 'font-size: 24px; font-weight: bold; color: #1890ff; margin: 20px 0;' }, timeText),
             h('p', { style: 'color: #666; font-size: 12px;' }, '最多支持抓取 3 分钟日志')
           ])
