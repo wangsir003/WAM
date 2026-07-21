@@ -8,6 +8,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
+    "setup-adb": "node setup-adb.js",
     "electron:dev": "concurrently \"vite\" \"wait-on http://localhost:5888 && electron .\"",
     "electron:build": "vite build && electron-builder",
     "build:win": "vite build && electron-builder --win --config",
@@ -60,6 +61,11 @@
       {
         "from": "build/icon.png",
         "to": "icon.png"
+      },
+      {
+        "from": "resources/platform-tools",
+        "to": "platform-tools",
+        "filter": ["**/*"]
       }
     ],
     "win": {

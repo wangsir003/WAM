@@ -15,6 +15,44 @@ let mainWindow = null;
 let logcatProcess = null; // 存储 logcat 进程
 let claudeWindows = {}; // 存储 Claude PowerShell 窗口的进程 ID，按项目路径索引
 
+// ==================== ADB 路径管理 ====================
+function getAdbPath() {
+  // 开发环境和打包后环境的 ADB 路径
+  const isDev = !app.isPackaged;
+
+  if (isDev) {
+    // 开发环境：从项目的 resources 目录
+    return join(process.cwd(), 'resources', 'platform-tools', 'adb.exe');
+  } else {
+    // 打包后：从 resources 目录
+    return join(process.resourcesPath, 'platform-tools', 'adb.exe');
+  }
+}
+
+// 初始化 ADB 环境
+function initializeAdb() {
+  const adbPath = getAdbPath();
+  const adbDir = dirname(adbPath);
+
+  console.log('ADB 路径:', adbPath);
+  console.log('ADB 目录:', adbDir);
+
+  // 检查 ADB 是否存在
+  if (!existsSync(adbPath)) {
+    console.error('ADB 不存在于路径:', adbPath);
+    return false;
+  }
+
+  // 将 ADB 目录添加到 PATH 环境变量（仅对当前进程及其子进程有效）
+  const currentPath = process.env.PATH || '';
+  if (!currentPath.includes(adbDir)) {
+    process.env.PATH = `${adbDir};${currentPath}`;
+    console.log('已将 ADB 目录添加到 PATH 环境变量');
+  }
+
+  return true;
+}
+
 // 捕获未处理的异常
 process.on('uncaughtException', (error) => {
   console.error('Uncaught Exception:', error);
@@ -157,6 +195,11 @@ app.whenReady().then(async () => {
     console.log('App is ready, starting initialization...');
     console.log('App path:', app.getAppPath());
     console.log('Is packaged:', app.isPackaged);
+
+    // 初始化 ADB 环境
+    if (!initializeAdb()) {
+      console.warn('ADB 初始化失败，ADB 相关功能可能无法使用');
+    }
 
     // 初始化缓存目录
     await ensureCacheDirs();

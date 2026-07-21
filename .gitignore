@@ -11,6 +11,9 @@ build/
 # WAM Cache
 .wam-cache/
 
+# ADB Tools (binary files)
+resources/platform-tools/
+
 # Logs
 *.log
 npm-debug.log*

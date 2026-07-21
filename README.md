@@ -42,8 +42,9 @@
 ### 环境要求
 
 - Node.js >= 16
-- Android SDK（已配置 ADB 环境变量）
 - Windows 10/11
+
+**注意：** 应用已内置 ADB 工具，无需单独安装 Android SDK！
 
 ### 安装依赖
 
@@ -57,6 +58,8 @@ npm install
 ```bash
 npm run electron:dev
 ```
+
+应用启动时会自动将内置的 ADB 添加到环境变量中，无需手动配置。
 
 ### 构建应用
 
@@ -108,10 +111,29 @@ WAM/
 
 ## 注意事项
 
-- 确保 Android SDK 已正确安装并配置环境变量
+- ✅ **应用已内置 ADB 工具**，无需安装 Android SDK
+- ✅ **自动配置环境变量**，启动应用时自动设置 ADB 路径
 - 设备需开启 USB 调试模式
 - 首次连接设备需在设备上授权 USB 调试
 - 项目需包含 `gradlew.bat` 才能使用一键编译功能
+
+## ADB 工具说明
+
+本项目已内置 Android Platform Tools（包含 ADB、Fastboot 等工具），解决了以下问题：
+
+1. **无需安装 Android SDK** - 应用自带完整的 ADB 工具
+2. **自动环境配置** - 应用启动时自动将 ADB 添加到 PATH
+3. **跨电脑部署** - 复制项目到新电脑即可直接使用，无需额外配置
+
+### 在新电脑上使用
+
+1. 克隆或复制项目到新电脑
+2. 运行 `npm install` 安装依赖
+3. 确保 `resources/platform-tools/` 目录存在且包含 ADB 工具
+   - 如果该目录不存在，运行 `npm run setup-adb` 自动设置
+4. 运行 `npm run electron:dev` 或打包后的应用
+
+**注意：** `resources/platform-tools/` 目录已被 `.gitignore` 忽略（约 20MB 二进制文件）。在新环境中首次使用时，需要运行 `npm run setup-adb` 来解压 ADB 工具，或手动将 ADB 工具复制到该目录。
 
 ## 许可证
 
