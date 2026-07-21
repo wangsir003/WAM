@@ -1670,94 +1670,100 @@ ipcMain.handle('get-installed-apps', async (event, deviceId) => {
 
     console.log('找到应用数量:', packages.length);
 
-    // 获取每个应用的名称
+    // 获取每个应用的名称（使用更简单直接的方法）
     const apps = [];
     for (const packageName of packages) {
+      let appName = null;
+
       try {
-        // 使用 dumpsys package 获取应用标签
-        const appInfoResult = await executeCommand('adb', [
+        // 方法1: 使用 pm dump 获取应用标签
+        const dumpResult = await executeCommand('adb', [
           '-s',
           deviceId,
           'shell',
-          `dumpsys package ${packageName} | grep -A1 "ApplicationInfo"`
+          'pm',
+          'dump',
+          packageName
         ]);
 
-        let appName = null;
+        // 查找 applicationInfo 中的标签
+        const lines = dumpResult.split('\n');
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i];
 
-        // 尝试从 dumpsys 中提取应用名称
-        if (appInfoResult) {
-          // 提取标签资源 ID
-          const labelMatch = appInfoResult.match(/labelRes=0x([0-9a-f]+)/i);
-
-          if (labelMatch && labelMatch[1] !== '0') {
-            // 有标签资源，尝试获取标签文本
-            try {
-              const labelResult = await executeCommand('adb', [
-                '-s',
-                deviceId,
-                'shell',
-                `dumpsys package ${packageName} | grep "label="`
-              ]);
-
-              const labelTextMatch = labelResult.match(/label="([^"]+)"/);
-              if (labelTextMatch && labelTextMatch[1]) {
-                appName = labelTextMatch[1];
+          // 查找 labelRes 或 nonLocalizedLabel
+          if (line.includes('labelRes=0x') && !line.includes('labelRes=0x0')) {
+            // 有标签资源，继续往下找 label= 字段
+            for (let j = i; j < Math.min(i + 10, lines.length); j++) {
+              const nextLine = lines[j];
+              const labelMatch = nextLine.match(/^\s*label="([^"]+)"/);
+              if (labelMatch && labelMatch[1]) {
+                appName = labelMatch[1];
+                break;
               }
-            } catch (e) {
-              // 忽略错误
             }
+            if (appName) break;
+          }
+
+          // 直接查找 nonLocalizedLabel
+          const nonLocalMatch = line.match(/nonLocalizedLabel="([^"]+)"/);
+          if (nonLocalMatch && nonLocalMatch[1]) {
+            appName = nonLocalMatch[1];
+            break;
           }
         }
 
-        // 如果上面方法失败，尝试从 aapt 获取（如果可用）
-        if (!appName) {
-          try {
-            // 获取 APK 路径
-            const pathResult = await executeCommand('adb', [
+        if (appName) {
+          console.log(`✓ 从 pm dump 获取到应用名: ${packageName} -> ${appName}`);
+        }
+      } catch (error) {
+        console.log(`× pm dump 失败: ${packageName}`, error.message);
+      }
+
+      // 方法2: 如果上面失败，尝试使用 aapt
+      if (!appName) {
+        try {
+          // 获取 APK 路径
+          const pathResult = await executeCommand('adb', [
+            '-s',
+            deviceId,
+            'shell',
+            'pm',
+            'path',
+            packageName
+          ]);
+
+          const pathMatch = pathResult.match(/package:(.+)/);
+          if (pathMatch && pathMatch[1]) {
+            const apkPath = pathMatch[1].trim();
+
+            // 使用 aapt dump 获取应用名称
+            const aaptResult = await executeCommand('adb', [
               '-s',
               deviceId,
               'shell',
-              'pm',
-              'path',
-              packageName
+              `aapt dump badging ${apkPath}`
             ]);
 
-            const pathMatch = pathResult.match(/package:(.+)/);
-            if (pathMatch && pathMatch[1]) {
-              const apkPath = pathMatch[1].trim();
-
-              // 使用 aapt dump 获取应用名称
-              const aaptResult = await executeCommand('adb', [
-                '-s',
-                deviceId,
-                'shell',
-                `aapt dump badging ${apkPath} | grep application-label`
-              ]);
-
-              const appLabelMatch = aaptResult.match(/application-label:'([^']+)'/);
-              if (appLabelMatch && appLabelMatch[1]) {
-                appName = appLabelMatch[1];
-              }
+            // 查找 application-label
+            const appLabelMatch = aaptResult.match(/application-label:'([^']+)'/);
+            if (appLabelMatch && appLabelMatch[1]) {
+              appName = appLabelMatch[1];
+              console.log(`✓ 从 aapt 获取到应用名: ${packageName} -> ${appName}`);
             }
-          } catch (e) {
-            // aapt 可能不可用，忽略
-            console.log(`无法通过 aapt 获取应用名称: ${packageName}`);
           }
+        } catch (error) {
+          console.log(`× aapt 方法失败: ${packageName}`, error.message);
         }
+      }
 
-        apps.push({
-          packageName: packageName,
-          appName: appName || packageName // 如果获取不到应用名称，使用包名
-        });
+      apps.push({
+        packageName: packageName,
+        appName: appName || packageName // 如果获取不到应用名称，使用包名
+      });
 
-        console.log(`应用: ${packageName} -> ${appName || '(未获取到名称)'}`);
-      } catch (error) {
-        // 获取应用名称失败，仍然添加（只有包名）
-        console.log(`获取应用信息失败: ${packageName}`, error.message);
-        apps.push({
-          packageName: packageName,
-          appName: packageName
-        });
+      if (!appName) {
+        console.log(`⚠ 未能获取应用名，使用包名: ${packageName}`);
       }
     }
 
@@ -1769,6 +1775,7 @@ ipcMain.handle('get-installed-apps', async (event, deviceId) => {
     });
 
     console.log('成功解析应用:', apps.length);
+    console.log('有应用名的数量:', apps.filter(app => app.appName !== app.packageName).length);
 
     return {
       success: true,
