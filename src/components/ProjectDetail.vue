@@ -38,14 +38,11 @@
         >
           选择 APK 安装
         </a-button>
-        <a-button
-          type="default"
-          :icon="h(RobotOutlined)"
-          @click="openClaude"
-          style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border: none;"
-        >
-          Claude AI
-        </a-button>
+        <a-tooltip title="打开 Claude AI">
+          <div class="claude-ai-btn" @click="openClaude">
+            <img src="@/assets/claude-icon.png" alt="Claude AI" class="claude-ai-icon" />
+          </div>
+        </a-tooltip>
       </a-space>
     </template>
 
@@ -358,5 +355,31 @@ async function openClaude() {
 
 :deep(.ant-descriptions-item-label) {
   font-weight: 500;
+}
+
+.claude-ai-btn {
+  width: 32px;
+  height: 32px;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  border-radius: 6px;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(102, 126, 234, 0.1);
+  border: 1px solid rgba(102, 126, 234, 0.2);
+}
+
+.claude-ai-btn:hover {
+  background: rgba(102, 126, 234, 0.2);
+  transform: scale(1.05);
+  border-color: rgba(102, 126, 234, 0.3);
+}
+
+.claude-ai-icon {
+  width: 24px;
+  height: 24px;
+  object-fit: contain;
 }
 </style>

@@ -1,5 +1,6 @@
 import { app, BrowserWindow, ipcMain, dialog, shell } from 'electron';
 import { spawn } from 'child_process';
+import { createHash } from 'crypto';
 import { readFile, readdir, stat, writeFile, mkdir, unlink } from 'fs/promises';
 import { join, basename } from 'path';
 import { fileURLToPath } from 'url';
@@ -71,6 +72,31 @@ async function cleanupOldClaudeScripts() {
   } catch (error) {
     console.error('清理缓存失败:', error);
   }
+}
+
+function getClaudeProjectName(projectPath) {
+  return basename(projectPath);
+}
+
+function getClaudeProjectKey(projectPath) {
+  return createHash('sha1')
+    .update(projectPath.replace(/\//g, '\\').toLowerCase())
+    .digest('hex')
+    .slice(0, 12);
+}
+
+function getClaudeLockFile(projectPath) {
+  const projectName = getClaudeProjectName(projectPath);
+  const projectKey = getClaudeProjectKey(projectPath);
+  return join(CACHE_DIRS.locks, `${projectName}-${projectKey}.lock`);
+}
+
+function getLegacyClaudeLockFile(projectPath) {
+  return join(CACHE_DIRS.locks, `${getClaudeProjectName(projectPath)}.lock`);
+}
+
+function escapePowerShellSingleQuoted(value) {
+  return String(value).replace(/'/g, "''");
 }
 
 function createWindow() {
@@ -825,6 +851,240 @@ app.on('before-quit', () => {
 // ==================== Claude AI 集成 ====================
 
 // 14. 打开 Claude AI（复用现有窗口）
+function parseClaudeLockContent(lockContent) {
+  const parts = lockContent.trim().replace(/^\uFEFF/, '').split('|');
+  return {
+    pidStr: parts[0] || '',
+    scriptPath: parts[1] || '',
+    hwnd: parts[2] || '0',
+    windowPid: parts[3] || '0'
+  };
+}
+
+function buildClaudeActivateScript(pid, hwnd, windowPid, projectName, uniqueClassName) {
+  const windowTitle = `Claude - ${projectName}`;
+  const escapedWindowTitle = escapePowerShellSingleQuoted(windowTitle);
+  const hwndValue = /^\d+$/.test(String(hwnd || '')) ? String(hwnd) : '0';
+  const windowPidValue = /^\d+$/.test(String(windowPid || '')) ? String(windowPid) : '0';
+
+  return `$targetPid = ${pid}
+$targetHwndValue = [Int64]${hwndValue}
+$targetWindowPid = [Int]${windowPidValue}
+$windowTitle = '${escapedWindowTitle}'
+
+try {
+  $typeDefinition = @"
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+
+public class ${uniqueClassName} {
+    [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+    [DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr hWnd);
+    [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+    [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd);
+    [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr hWnd);
+    [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
+    [DllImport("user32.dll")] public static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int count);
+    [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+    [DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProc enumProc, IntPtr lParam);
+    public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+}
+"@
+  Add-Type -TypeDefinition $typeDefinition -ErrorAction Stop
+} catch {
+  exit 1
+}
+
+function Activate-Window([IntPtr]$hwnd) {
+  if ($hwnd -eq [IntPtr]::Zero) { return $false }
+  if (-not [${uniqueClassName}]::IsWindow($hwnd)) { return $false }
+  if (-not [${uniqueClassName}]::IsWindowVisible($hwnd)) { return $false }
+
+  $showResult = $false
+  if ([${uniqueClassName}]::IsIconic($hwnd)) {
+    $showResult = [${uniqueClassName}]::ShowWindow($hwnd, 9)
+  } else {
+    $showResult = [${uniqueClassName}]::ShowWindow($hwnd, 5)
+  }
+
+  Start-Sleep -Milliseconds 120
+  $topResult = [${uniqueClassName}]::BringWindowToTop($hwnd)
+  $foregroundResult = [${uniqueClassName}]::SetForegroundWindow($hwnd)
+  return ($showResult -or $topResult -or $foregroundResult)
+}
+
+function Get-RelatedPids([int]$pid) {
+  $set = New-Object 'System.Collections.Generic.HashSet[int]'
+  $null = $set.Add($pid)
+
+  try {
+    $processes = @(Get-CimInstance Win32_Process -ErrorAction Stop)
+
+    for ($round = 0; $round -lt 8; $round++) {
+      $added = $false
+
+      foreach ($processInfo in $processes) {
+        $candidatePid = [int]$processInfo.ProcessId
+        $candidateParentPid = [int]$processInfo.ParentProcessId
+
+        if ($set.Contains($candidateParentPid) -and -not $set.Contains($candidatePid)) {
+          $null = $set.Add($candidatePid)
+          $added = $true
+        }
+      }
+
+      if (-not $added) { break }
+    }
+  } catch {
+  }
+
+  return ,$set
+}
+
+function Find-RelatedProcessWindow {
+  $relatedPids = Get-RelatedPids $targetPid
+  $script:relatedHwnd = [IntPtr]::Zero
+
+  [${uniqueClassName}]::EnumWindows({
+      param([IntPtr]$hwnd, [IntPtr]$lParam)
+
+      if (-not [${uniqueClassName}]::IsWindowVisible($hwnd)) {
+        return $true
+      }
+
+      [UInt32]$ownerPid = 0
+      [${uniqueClassName}]::GetWindowThreadProcessId($hwnd, [ref]$ownerPid) | Out-Null
+
+      if (-not $relatedPids.Contains([int]$ownerPid)) {
+        return $true
+      }
+
+      if ($script:relatedHwnd -eq [IntPtr]::Zero) {
+        $script:relatedHwnd = $hwnd
+        return $false
+      }
+
+      return $true
+  }, [IntPtr]::Zero) | Out-Null
+
+  return $script:relatedHwnd
+}
+
+if ($targetHwndValue -gt 0) {
+  $targetHwnd = [IntPtr]$targetHwndValue
+  if ([${uniqueClassName}]::IsWindow($targetHwnd) -and [${uniqueClassName}]::IsWindowVisible($targetHwnd)) {
+    [UInt32]$targetOwnerPid = 0
+    [${uniqueClassName}]::GetWindowThreadProcessId($targetHwnd, [ref]$targetOwnerPid) | Out-Null
+    $relatedPidsForHandle = Get-RelatedPids $targetPid
+    $ownerMatchesLock = $targetWindowPid -gt 0 -and [int]$targetOwnerPid -eq $targetWindowPid
+    $ownerMatchesProcessTree = $targetWindowPid -eq 0 -and $relatedPidsForHandle.Contains([int]$targetOwnerPid)
+
+    if (($ownerMatchesLock -or $ownerMatchesProcessTree) -and (Activate-Window $targetHwnd)) {
+      exit 0
+    }
+  }
+}
+
+$relatedHwnd = Find-RelatedProcessWindow
+if (Activate-Window $relatedHwnd) {
+  exit 0
+}
+
+exit 1
+`;
+}
+
+async function activateClaudeWindow(projectName, pid, hwnd, windowPid) {
+  const activateScriptPath = join(CACHE_DIRS.temp, `activate-${projectName}-${Date.now()}.ps1`);
+  const uniqueClassName = `Win32Activator${Date.now()}`;
+  const activateScriptContent = buildClaudeActivateScript(pid, hwnd, windowPid, projectName, uniqueClassName);
+
+  await writeFile(activateScriptPath, activateScriptContent, 'utf-8');
+  console.log('Claude activation script created:', activateScriptPath);
+
+  try {
+    console.log('Running Claude activation script...');
+    await executeCommand('powershell', ['-ExecutionPolicy', 'Bypass', '-File', activateScriptPath]);
+    console.log('Claude activation script completed');
+  } finally {
+    try {
+      await unlink(activateScriptPath);
+    } catch (e) {
+      // Ignore cleanup failures for temporary activation scripts.
+    }
+  }
+}
+
+async function isClaudeProcessForLock(pid, scriptPath) {
+  if (!Number.isInteger(pid) || pid <= 0 || !scriptPath) {
+    return false;
+  }
+
+  const validateScriptPath = join(CACHE_DIRS.temp, `validate-claude-${pid}-${Date.now()}.ps1`);
+  const escapedScriptPath = escapePowerShellSingleQuoted(scriptPath);
+  const validateScriptContent = `$targetPid = ${pid}
+$scriptPath = '${escapedScriptPath}'
+
+$processInfo = Get-CimInstance Win32_Process -Filter "ProcessId = $targetPid" -ErrorAction SilentlyContinue
+if (-not $processInfo) {
+  exit 1
+}
+
+$commandLine = [string]$processInfo.CommandLine
+if ([string]::IsNullOrWhiteSpace($commandLine)) {
+  exit 1
+}
+
+if ($commandLine.IndexOf($scriptPath, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
+  exit 0
+}
+
+exit 1
+`;
+
+  await writeFile(validateScriptPath, validateScriptContent, 'utf-8');
+
+  try {
+    await executeCommand('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', validateScriptPath]);
+    return true;
+  } catch (error) {
+    console.log('Claude lock process validation failed:', error.message);
+    return false;
+  } finally {
+    try {
+      await unlink(validateScriptPath);
+    } catch (e) {
+      // Ignore cleanup failures for temporary validation scripts.
+    }
+  }
+}
+
+async function getExistingClaudeLockFile(lockFile, legacyLockFile, projectPath) {
+  if (existsSync(lockFile)) {
+    return lockFile;
+  }
+
+  if (!existsSync(legacyLockFile)) {
+    return null;
+  }
+
+  try {
+    const lockContent = await readFile(legacyLockFile, 'utf-8');
+    const { scriptPath } = parseClaudeLockContent(lockContent);
+
+    if (!scriptPath || !existsSync(scriptPath)) {
+      return null;
+    }
+
+    const scriptContent = await readFile(scriptPath, 'utf-8');
+    return scriptContent.includes(`Set-Location "${projectPath}"`) ? legacyLockFile : null;
+  } catch (error) {
+    console.log('Legacy Claude lock validation failed:', error.message);
+    return null;
+  }
+}
+
 ipcMain.handle('open-claude', async (event, projectPath) => {
   try {
     // 从渲染进程获取 Claude 配置
@@ -853,18 +1113,20 @@ ipcMain.handle('open-claude', async (event, projectPath) => {
     }
 
     // 检查是否已经有该项目的 Claude 窗口在运行
-    const projectName = projectPath.split('\\').pop();
-    const lockFile = join(CACHE_DIRS.locks, `${projectName}.lock`);
+    const projectName = getClaudeProjectName(projectPath);
+    const lockFile = getClaudeLockFile(projectPath);
+    const legacyLockFile = getLegacyClaudeLockFile(projectPath);
+    const existingLockFile = await getExistingClaudeLockFile(lockFile, legacyLockFile, projectPath);
 
     console.log('检查窗口复用，项目名称:', projectName);
     console.log('锁文件路径:', lockFile);
 
-    if (existsSync(lockFile)) {
+    if (existingLockFile) {
       console.log('找到锁文件，尝试激活窗口');
       try {
-        // 从锁文件读取信息 (格式: PID|ScriptPath 或 PENDING|ScriptPath)
-        const lockContent = await readFile(lockFile, 'utf-8');
-        let [pidStr, scriptPath] = lockContent.trim().split('|');
+        // 从锁文件读取信息 (格式: PID|ScriptPath|WindowHandle 或 PENDING|ScriptPath)
+        const lockContent = await readFile(existingLockFile, 'utf-8');
+        let { pidStr, scriptPath, hwnd, windowPid } = parseClaudeLockContent(lockContent);
         let pid = null;
 
         // 如果是 PENDING 状态，说明窗口正在启动中，等待一下
@@ -873,10 +1135,16 @@ ipcMain.handle('open-claude', async (event, projectPath) => {
           await new Promise(resolve => setTimeout(resolve, 2000));
 
           // 重新读取锁文件，看是否已更新为实际PID
-          const updatedContent = await readFile(lockFile, 'utf-8');
-          const [updatedPid, updatedScript] = updatedContent.trim().split('|');
+          const updatedContent = await readFile(existingLockFile, 'utf-8');
+          const updatedInfo = parseClaudeLockContent(updatedContent);
+          const updatedPid = updatedInfo.pidStr;
 
           if (updatedPid === 'PENDING') {
+            const lockStats = await stat(existingLockFile);
+            if (Date.now() - lockStats.mtimeMs > 15000) {
+              throw new Error('Claude 窗口启动锁已过期');
+            }
+
             console.log('窗口仍在启动中，激活现有窗口');
             // 直接返回成功，不创建新窗口
             mainWindow.webContents.send('log-output', {
@@ -888,7 +1156,9 @@ ipcMain.handle('open-claude', async (event, projectPath) => {
 
           // 已更新为实际PID，更新变量以便后续使用
           pidStr = updatedPid;
-          scriptPath = updatedScript;
+          scriptPath = updatedInfo.scriptPath;
+          hwnd = updatedInfo.hwnd;
+          windowPid = updatedInfo.windowPid;
           console.log('获取到实际PID:', updatedPid);
         }
 
@@ -902,79 +1172,14 @@ ipcMain.handle('open-claude', async (event, projectPath) => {
         console.log('锁文件中的PID:', pid);
         console.log('脚本路径:', scriptPath);
 
-        // 通过窗口标题精确查找并激活窗口
-        const activateScriptPath = join(CACHE_DIRS.temp, `activate-${projectName}-${Date.now()}.ps1`);
-        const uniqueClassName = `Win32Activator${Date.now()}`;
-        const windowTitle = `Claude - ${projectName}`;
-        const activateScriptContent = `$targetPid = ${pid}
-$windowTitle = "${windowTitle}"
-
-# 加载 Win32 API
-try {
-  Add-Type @"
-using System;
-using System.Runtime.InteropServices;
-using System.Text;
-public class ${uniqueClassName} {
-    [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
-    [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
-    [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd);
-    [DllImport("user32.dll")] public static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int count);
-    [DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProc enumProc, IntPtr lParam);
-    public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
-}
-"@
-} catch {
-  exit 1
-}
-
-# 查找匹配标题的窗口
-\$found = \$false
-\$targetHwnd = [IntPtr]::Zero
-
-[${uniqueClassName}]::EnumWindows({
-    param([IntPtr]\$hwnd, [IntPtr]\$lParam)
-
-    \$sb = New-Object System.Text.StringBuilder 256
-    [${uniqueClassName}]::GetWindowText(\$hwnd, \$sb, 256) | Out-Null
-    \$title = \$sb.ToString()
-
-    if (\$title -eq \$windowTitle) {
-        \$script:found = \$true
-        \$script:targetHwnd = \$hwnd
-        return \$false  # 停止枚举
-    }
-    return \$true  # 继续枚举
-}, [IntPtr]::Zero) | Out-Null
-
-if (\$found -and \$targetHwnd -ne [IntPtr]::Zero) {
-    # 找到窗口，激活它
-    if ([${uniqueClassName}]::IsIconic(\$targetHwnd)) {
-        [${uniqueClassName}]::ShowWindow(\$targetHwnd, 9) | Out-Null
-        Start-Sleep -Milliseconds 100
-    }
-    [${uniqueClassName}]::SetForegroundWindow(\$targetHwnd) | Out-Null
-    exit 0
-}
-
-exit 1
-`;
-
-          await writeFile(activateScriptPath, activateScriptContent, 'utf-8');
-          console.log('激活脚本已创建:', activateScriptPath);
+        const isValidClaudeProcess = await isClaudeProcessForLock(pid, scriptPath);
+        if (!isValidClaudeProcess) {
+          throw new Error('Claude 进程已退出或 PID 已被其他进程复用');
+        }
 
           try {
-            console.log('开始执行激活脚本...');
-            await executeCommand('powershell', ['-ExecutionPolicy', 'Bypass', '-File', activateScriptPath]);
-            console.log('激活脚本执行成功');
-
-            // 清理临时脚本
-            try {
-              await unlink(activateScriptPath);
-            } catch (e) {
-              // 忽略清理失败
-            }
-
+            // 优先按锁文件中的窗口句柄激活，标题变化后仍能精准对应。
+            await activateClaudeWindow(projectName, pid, hwnd, windowPid);
             console.log('激活窗口成功');
 
             mainWindow.webContents.send('log-output', {
@@ -986,59 +1191,94 @@ exit 1
           } catch (activateError) {
             console.log('激活窗口失败（执行脚本失败）:', activateError.message);
             console.log('激活错误详情:', activateError);
-            // 清理临时脚本
-            try {
-              await unlink(activateScriptPath);
-            } catch (e) {
-              // 忽略清理失败
-            }
 
             // 检查进程是否还存在
             try {
               process.kill(pid, 0); // 发送信号0只检查进程是否存在，不杀死它
               console.log('进程仍然存在，使用备用方法激活窗口');
 
-              // 使用备用方法：通过窗口标题查找并激活
+              // 使用备用方法：继续按进程关系查找并激活
               const psScript = join(CACHE_DIRS.temp, `restore-${projectName}-${Date.now()}.ps1`);
               const psContent = `
-$windowTitle = "Claude - ${projectName}"
+$targetPid = ${pid}
 
 $code = @'
 [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
 [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+[DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr hWnd);
 [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd);
+[DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
 [DllImport("user32.dll", CharSet = CharSet.Auto)] public static extern int GetWindowText(IntPtr hWnd, System.Text.StringBuilder text, int count);
+[DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
 [DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProc enumProc, IntPtr lParam);
 public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
 '@
 
 Add-Type -MemberDefinition $code -Name WinAPI2 -Namespace Win32 -ErrorAction SilentlyContinue
 
-# 查找匹配标题的窗口
-$found = $false
+function Get-RelatedPids([int]$pid) {
+    $set = New-Object 'System.Collections.Generic.HashSet[int]'
+    $null = $set.Add($pid)
+
+    try {
+        $processes = @(Get-CimInstance Win32_Process -ErrorAction Stop)
+
+        for ($round = 0; $round -lt 8; $round++) {
+            $added = $false
+            foreach ($processInfo in $processes) {
+                $candidatePid = [int]$processInfo.ProcessId
+                $candidateParentPid = [int]$processInfo.ParentProcessId
+                if ($set.Contains($candidateParentPid) -and -not $set.Contains($candidatePid)) {
+                    $null = $set.Add($candidatePid)
+                    $added = $true
+                }
+            }
+            if (-not $added) { break }
+        }
+    } catch {
+    }
+
+    return ,$set
+}
+
+function Activate-Window([IntPtr]$hwnd) {
+    if ($hwnd -eq [IntPtr]::Zero) { return $false }
+    if (-not [Win32.WinAPI2]::IsWindowVisible($hwnd)) { return $false }
+
+    $showResult = $false
+    if ([Win32.WinAPI2]::IsIconic($hwnd)) {
+        $showResult = [Win32.WinAPI2]::ShowWindow($hwnd, 9)
+    } else {
+        $showResult = [Win32.WinAPI2]::ShowWindow($hwnd, 5)
+    }
+    Start-Sleep -Milliseconds 100
+    $topResult = [Win32.WinAPI2]::BringWindowToTop($hwnd)
+    $foregroundResult = [Win32.WinAPI2]::SetForegroundWindow($hwnd)
+    return ($showResult -or $topResult -or $foregroundResult)
+}
+
+$relatedPids = Get-RelatedPids $targetPid
 $targetHwnd = [IntPtr]::Zero
 
 [Win32.WinAPI2]::EnumWindows({
     param([IntPtr]$hwnd, [IntPtr]$lParam)
 
-    $sb = New-Object System.Text.StringBuilder 256
-    [Win32.WinAPI2]::GetWindowText($hwnd, $sb, 256) | Out-Null
-    $title = $sb.ToString()
+    if (-not [Win32.WinAPI2]::IsWindowVisible($hwnd)) {
+        return $true
+    }
 
-    if ($title -eq $windowTitle) {
-        $script:found = $true
+    [UInt32]$ownerPid = 0
+    [Win32.WinAPI2]::GetWindowThreadProcessId($hwnd, [ref]$ownerPid) | Out-Null
+
+    if ($relatedPids.Contains([int]$ownerPid)) {
         $script:targetHwnd = $hwnd
         return $false
     }
+
     return $true
 }, [IntPtr]::Zero) | Out-Null
 
-if ($found -and $targetHwnd -ne [IntPtr]::Zero) {
-    if ([Win32.WinAPI2]::IsIconic($targetHwnd)) {
-        [Win32.WinAPI2]::ShowWindow($targetHwnd, 9) | Out-Null
-        Start-Sleep -Milliseconds 100
-    }
-    [Win32.WinAPI2]::SetForegroundWindow($targetHwnd) | Out-Null
+if (Activate-Window $targetHwnd) {
     exit 0
 }
 
@@ -1056,6 +1296,10 @@ exit 1
                 } catch (e) {}
               } catch (psError) {
                 console.log('PowerShell 激活失败:', psError.message);
+                try {
+                  await unlink(psScript);
+                } catch (e) {}
+                throw psError;
               }
 
               // 无论激活是否成功，都返回成功并提示用户
@@ -1074,7 +1318,7 @@ exit 1
         console.log('错误详情:', error);
         // 窗口已关闭，清除锁文件
         try {
-          await unlink(lockFile);
+          await unlink(existingLockFile);
           console.log('已清除过期锁文件，将继续创建新窗口');
         } catch (e) {
           console.log('清除锁文件失败:', e.message);
@@ -1100,6 +1344,10 @@ exit 1
       data: `\n正在启动 Claude AI...\n项目路径: ${projectPath}\n`
     });
 
+    // 先预创建锁文件，避免新窗口脚本写入真实 PID 后被 PENDING 覆盖。
+    await writeFile(lockFile, `PENDING|${scriptPath}`, 'utf-8');
+    console.log('预创建锁文件:', lockFile);
+
     // 优先使用 Windows Terminal，每次打开独立的新窗口
     let psProcess;
 
@@ -1114,11 +1362,6 @@ exit 1
         detached: true,
         stdio: 'ignore'
       });
-
-      // 先预创建锁文件，包含占位PID（稍后脚本会更新）
-      // 格式: PENDING|scriptPath，表示窗口正在启动
-      await writeFile(lockFile, `PENDING|${scriptPath}`, 'utf-8');
-      console.log('预创建锁文件:', lockFile);
 
     } catch (error) {
       // 如果 Windows Terminal 不可用，降级到传统 PowerShell
@@ -1135,10 +1378,6 @@ exit 1
         stdio: 'ignore',
         windowsHide: true
       });
-
-      // 预创建锁文件
-      await writeFile(lockFile, `PENDING|${scriptPath}`, 'utf-8');
-      console.log('预创建锁文件:', lockFile);
     }
 
     // 分离进程，让它独立运行
@@ -1161,7 +1400,8 @@ exit 1
 
 // 生成 Claude PowerShell 脚本
 function generateClaudeScript(config, projectPath, lockFilePath) {
-  const projectName = projectPath.split('\\').pop();
+  const projectName = getClaudeProjectName(projectPath);
+  const startupWindowTitle = `WAM-Claude-${getClaudeProjectKey(projectPath)}-${Date.now()}`;
 
   const modelsScript = config.models.map((model, index) => {
     const num = index + 1;
@@ -1199,10 +1439,60 @@ function generateClaudeScript(config, projectPath, lockFilePath) {
 # Generated at ${new Date().toLocaleString()}
 # Project: ${projectName}
 
-# Write PID and script path to lock file for window reuse detection
+# Write PID, script path, window handle, and window owner PID for reuse detection
 $lockFile = "${lockFilePath.replace(/\\/g, '/')}"
 $scriptPath = $MyInvocation.MyCommand.Path
-"$PID|$scriptPath" | Out-File -FilePath $lockFile -Encoding UTF8
+$wamWindowTitle = "${startupWindowTitle}"
+$host.UI.RawUI.WindowTitle = $wamWindowTitle
+$windowHandle = 0
+$windowPid = 0
+
+try {
+  $typeDefinition = @"
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+
+public class WamClaudeWindow {
+    [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
+    [DllImport("user32.dll")] public static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int count);
+    [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+    [DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProc enumProc, IntPtr lParam);
+    public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+}
+"@
+  Add-Type -TypeDefinition $typeDefinition -ErrorAction SilentlyContinue
+
+  for ($attempt = 0; $attempt -lt 20 -and $windowHandle -eq 0; $attempt++) {
+    Start-Sleep -Milliseconds 100
+
+    [WamClaudeWindow]::EnumWindows({
+        param([IntPtr]$hwnd, [IntPtr]$lParam)
+
+        if (-not [WamClaudeWindow]::IsWindowVisible($hwnd)) {
+          return $true
+        }
+
+        $sb = New-Object System.Text.StringBuilder 512
+        [WamClaudeWindow]::GetWindowText($hwnd, $sb, 512) | Out-Null
+
+        if ($sb.ToString() -eq $script:wamWindowTitle) {
+          [UInt32]$ownerPid = 0
+          [WamClaudeWindow]::GetWindowThreadProcessId($hwnd, [ref]$ownerPid) | Out-Null
+          $script:windowHandle = $hwnd.ToInt64()
+          $script:windowPid = [int]$ownerPid
+          return $false
+        }
+
+        return $true
+    }, [IntPtr]::Zero) | Out-Null
+  }
+} catch {
+  $windowHandle = 0
+  $windowPid = 0
+}
+
+"$PID|$scriptPath|$windowHandle|$windowPid" | Out-File -FilePath $lockFile -Encoding UTF8
 
 # Register cleanup on exit
 $cleanupScript = {
@@ -1249,4 +1539,3 @@ if (Test-Path $lockFile) {
 }
 `;
 }
-
