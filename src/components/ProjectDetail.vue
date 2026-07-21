@@ -347,12 +347,10 @@ async function captureLog() {
   }
 
   let packageName = null;
-  let appName = null;
 
   // 如果有选中的项目，使用项目的包名
   if (project.value && project.value.packageName) {
     packageName = project.value.packageName;
-    appName = project.value.customName;
   } else {
     // 未选择项目或项目没有包名，让用户从已安装应用中选择
     try {
@@ -371,8 +369,6 @@ async function captureLog() {
       let selectedPackage = result.apps[0]?.packageName; // 默认选中第一个
 
       const selectedApp = await new Promise((resolve) => {
-        const radioGroupRef = ref(selectedPackage);
-
         Modal.confirm({
           title: '选择要抓取日志的应用',
           width: 700,
@@ -391,23 +387,26 @@ async function captureLog() {
                     cursor: 'pointer',
                     transition: 'all 0.3s',
                     backgroundColor: selectedPackage === app.packageName ? '#e6f7ff' : '#fff',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '12px'
                   },
                   onClick: () => {
-                    radioGroupRef.value = app.packageName;
                     selectedPackage = app.packageName;
                   }
                 }, [
-                  h('div', { style: 'display: flex; align-items: center; gap: 12px;' }, [
-                    h('input', {
-                      type: 'radio',
-                      name: 'app-select',
-                      checked: selectedPackage === app.packageName,
-                      style: 'cursor: pointer; flex-shrink: 0;'
-                    }),
-                    h('div', {
-                      style: 'flex: 1; font-size: 14px; color: #262626; font-family: monospace; word-break: break-all;'
-                    }, app.packageName)
-                  ])
+                  h('input', {
+                    type: 'radio',
+                    name: 'app-select',
+                    checked: selectedPackage === app.packageName,
+                    style: 'cursor: pointer; flex-shrink: 0;',
+                    onClick: (e) => {
+                      e.stopPropagation();
+                    }
+                  }),
+                  h('div', {
+                    style: 'flex: 1; font-size: 14px; color: #262626; font-family: monospace; word-break: break-all;'
+                  }, app.packageName)
                 ])
               )
             )

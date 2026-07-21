@@ -1666,37 +1666,15 @@ ipcMain.handle('get-installed-apps', async (event, deviceId) => {
     const packages = result
       .split('\n')
       .map(line => line.trim().replace('package:', ''))
-      .filter(pkg => pkg.length > 0);
+      .filter(pkg => pkg.length > 0)
+      .sort(); // 按字母顺序排序
 
     console.log('找到应用数量:', packages.length);
 
-    // 将包名转换为更友好的显示名称
-    const apps = packages.map(packageName => {
-      // 尝试从包名推断应用名称（简化版）
-      // 例如: com.tencent.mm -> Tencent MM
-      //      com.example.myapp -> Example Myapp
-      let friendlyName = packageName;
-
-      const parts = packageName.split('.');
-      if (parts.length >= 2) {
-        // 取最后两部分
-        const lastTwo = parts.slice(-2);
-        friendlyName = lastTwo
-          .map(part => part.charAt(0).toUpperCase() + part.slice(1))
-          .join(' ');
-      }
-
-      return {
-        packageName: packageName,
-        appName: friendlyName,
-        displayName: friendlyName // 用于前端显示
-      };
-    });
-
-    // 按包名排序
-    apps.sort((a, b) => a.packageName.localeCompare(b.packageName));
-
-    console.log('成功解析应用:', apps.length);
+    // 直接返回包名列表
+    const apps = packages.map(packageName => ({
+      packageName: packageName
+    }));
 
     return {
       success: true,
