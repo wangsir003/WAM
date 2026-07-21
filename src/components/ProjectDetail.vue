@@ -385,8 +385,8 @@ async function captureLog() {
                 h('div', {
                   key: app.packageName,
                   style: {
-                    padding: '12px',
-                    border: selectedPackage === app.packageName ? '2px solid #1890ff' : '1px solid #f0f0f0',
+                    padding: '12px 16px',
+                    border: selectedPackage === app.packageName ? '2px solid #1890ff' : '1px solid #e8e8e8',
                     borderRadius: '6px',
                     cursor: 'pointer',
                     transition: 'all 0.3s',
@@ -402,16 +402,11 @@ async function captureLog() {
                       type: 'radio',
                       name: 'app-select',
                       checked: selectedPackage === app.packageName,
-                      style: 'cursor: pointer;'
+                      style: 'cursor: pointer; flex-shrink: 0;'
                     }),
-                    h('div', { style: 'flex: 1;' }, [
-                      h('div', {
-                        style: 'font-weight: 500; font-size: 14px; color: #262626; margin-bottom: 4px;'
-                      }, app.appName),
-                      h('div', {
-                        style: 'font-size: 12px; color: #8c8c8c; font-family: monospace;'
-                      }, app.packageName)
-                    ])
+                    h('div', {
+                      style: 'flex: 1; font-size: 14px; color: #262626; font-family: monospace; word-break: break-all;'
+                    }, app.packageName)
                   ])
                 ])
               )
