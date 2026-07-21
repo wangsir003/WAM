@@ -1,5 +1,5 @@
 import { app, BrowserWindow, ipcMain, dialog, shell } from 'electron';
-import { spawn } from 'child_process';
+import { spawn, exec } from 'child_process';
 import { createHash } from 'crypto';
 import { readFile, readdir, stat, writeFile, mkdir, unlink } from 'fs/promises';
 import { join, basename } from 'path';
@@ -7,6 +7,9 @@ import { fileURLToPath } from 'url';
 import { dirname } from 'path';
 import { homedir } from 'os';
 import { existsSync } from 'fs';
+import { promisify } from 'util';
+
+const execAsync = promisify(exec);
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -32,7 +35,6 @@ function getBuiltinAdbPath() {
 // 检查系统是否已配置 ADB
 async function checkSystemAdb() {
   return new Promise((resolve) => {
-    const { exec } = require('child_process');
     exec('adb version', (error, stdout, stderr) => {
       if (error) {
         console.log('系统未配置 ADB 或 ADB 不可用');
