@@ -1,7 +1,7 @@
 <template>
   <a-card class="project-detail-card">
     <template #title>
-      <div style="display: flex; align-items: center; gap: 8px; cursor: pointer;" @click="detailExpanded = !detailExpanded">
+      <div v-if="project" style="display: flex; align-items: center; gap: 8px; cursor: pointer;" @click="detailExpanded = !detailExpanded">
         <FolderOutlined v-if="!project.isApkOnly" style="color: #1890ff;" />
         <FileOutlined v-else style="color: #1890ff;" />
         <span style="font-weight: 600;">{{ project.customName }}</span>
@@ -9,23 +9,28 @@
         <UpOutlined v-else style="font-size: 12px;" />
         <span style="color: rgba(0, 0, 0, 0.45); font-weight: 400;">- 项目详情</span>
       </div>
+      <div v-else style="display: flex; align-items: center; gap: 8px;">
+        <AppstoreOutlined style="color: #1890ff;" />
+        <span style="font-weight: 600;">项目功能</span>
+        <span style="color: rgba(0, 0, 0, 0.45); font-weight: 400;">- 未选择项目</span>
+      </div>
     </template>
 
     <template #extra>
       <a-space>
         <a-button
-          v-if="!project.isApkOnly"
+          v-if="project && !project.isApkOnly"
           type="primary"
           :icon="h(ThunderboltOutlined)"
           :loading="building"
           @click="buildAndInstall"
-          :disabled="!hasSelectedDevices"
+          :disabled="!project || !hasSelectedDevices"
         >
           运行
         </a-button>
         <a-button
           :icon="h(PoweroffOutlined)"
-          :disabled="!project.packageName || !hasSelectedDevices"
+          :disabled="!project || !project.packageName || !hasSelectedDevices"
           @click="stopApp"
         >
           停止
@@ -38,8 +43,16 @@
         >
           选择 APK 安装
         </a-button>
+        <a-button
+          :icon="h(FileTextOutlined)"
+          :loading="capturingLog"
+          @click="captureLog"
+          :disabled="!project || !project.packageName || !hasSelectedDevices"
+        >
+          抓取日志
+        </a-button>
         <a-tooltip title="打开 Claude AI">
-          <div class="claude-ai-btn" @click="openClaude">
+          <div class="claude-ai-btn" @click="openClaude" :class="{ 'disabled': !project }">
             <img src="@/assets/claude-icon.png" alt="Claude AI" class="claude-ai-icon" />
           </div>
         </a-tooltip>
@@ -47,7 +60,7 @@
     </template>
 
     <!-- 可展开/收起的详情内容 -->
-    <div v-show="detailExpanded">
+    <div v-if="project" v-show="detailExpanded">
       <a-descriptions :column="2" size="small" bordered>
         <a-descriptions-item label="项目路径">
           <a-space>
@@ -111,8 +124,16 @@
       <a-divider>应用管理</a-divider>
     </div>
 
+    <!-- 未选择项目时的提示 -->
+    <div v-else class="no-project-tip">
+      <a-empty
+        description="请从左侧选择一个项目以查看详情和使用项目相关功能"
+        :image="Empty.PRESENTED_IMAGE_SIMPLE"
+      />
+    </div>
+
     <!-- 应用管理按钮始终显示 -->
-    <a-space>
+    <a-space v-if="project">
       <a-button
         :icon="h(ClearOutlined)"
         :disabled="!project.packageName || !hasSelectedDevices"
@@ -141,7 +162,7 @@
 
 <script setup>
 import { ref, computed, h } from 'vue';
-import { message, Modal } from 'ant-design-vue';
+import { message, Modal, Empty } from 'ant-design-vue';
 import {
   ThunderboltOutlined,
   UploadOutlined,
@@ -155,13 +176,17 @@ import {
   DownOutlined,
   UpOutlined,
   PoweroffOutlined,
-  RobotOutlined
+  RobotOutlined,
+  FileTextOutlined,
+  AppstoreOutlined,
+  FolderOutlined
 } from '@ant-design/icons-vue';
 import { useProjectStore } from '@/stores/project';
 
 const projectStore = useProjectStore();
 const building = ref(false);
 const installing = ref(false);
+const capturingLog = ref(false);
 const detailExpanded = ref(false); // 默认收起
 
 const project = computed(() => projectStore.selectedProject);
@@ -314,8 +339,68 @@ async function stopApp() {
   }
 }
 
+// 抓取日志
+async function captureLog() {
+  if (!project.value || !project.value.packageName) {
+    message.warning('请先选择一个包含包名的项目');
+    return;
+  }
+
+  if (!hasSelectedDevices.value) {
+    message.warning('请先选择至少一个设备');
+    return;
+  }
+
+  try {
+    capturingLog.value = true;
+
+    // 让用户选择保存路径和文件名
+    const savePath = await window.electronAPI.selectLogSavePath(project.value.customName);
+
+    if (!savePath) {
+      capturingLog.value = false;
+      return;
+    }
+
+    message.info('正在抓取日志，请稍候...');
+
+    // 调用后端抓取日志
+    const result = await window.electronAPI.captureLog(
+      project.value.packageName,
+      projectStore.selectedDevices[0], // 使用第一个选中的设备
+      savePath
+    );
+
+    if (result.success) {
+      message.success(`日志已保存到: ${savePath}`);
+
+      // 询问是否打开日志文件
+      Modal.confirm({
+        title: '日志抓取完成',
+        content: `日志文件已保存，是否打开查看？`,
+        okText: '打开',
+        cancelText: '关闭',
+        onOk: () => {
+          window.electronAPI.openLogFile(savePath);
+        }
+      });
+    } else {
+      message.error('抓取日志失败: ' + result.error);
+    }
+  } catch (error) {
+    message.error('抓取日志失败: ' + error.message);
+  } finally {
+    capturingLog.value = false;
+  }
+}
+
 // 打开 Claude AI
 async function openClaude() {
+  if (!project.value) {
+    message.warning('请先选择一个项目');
+    return;
+  }
+
   console.log('openClaude 被调用');
   console.log('项目路径:', project.value.path);
   console.log('electronAPI:', window.electronAPI);
@@ -377,9 +462,26 @@ async function openClaude() {
   border-color: rgba(102, 126, 234, 0.3);
 }
 
+.claude-ai-btn.disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+  background: rgba(102, 126, 234, 0.05);
+  border-color: rgba(102, 126, 234, 0.1);
+}
+
+.claude-ai-btn.disabled:hover {
+  background: rgba(102, 126, 234, 0.05);
+  transform: none;
+  border-color: rgba(102, 126, 234, 0.1);
+}
+
 .claude-ai-icon {
   width: 24px;
   height: 24px;
   object-fit: contain;
+}
+
+.no-project-tip {
+  padding: 40px 20px;
 }
 </style>

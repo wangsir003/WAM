@@ -1618,3 +1618,137 @@ if (Test-Path $lockFile) {
 }
 `;
 }
+
+// ==================== 日志抓取功能 ====================
+
+// 15. 选择日志保存路径
+ipcMain.handle('select-log-save-path', async (event, projectName) => {
+  const result = await dialog.showSaveDialog(mainWindow, {
+    title: '保存日志文件',
+    defaultPath: `${projectName || 'app'}_log_${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}.txt`,
+    filters: [
+      { name: 'Text Files', extensions: ['txt'] },
+      { name: 'All Files', extensions: ['*'] }
+    ]
+  });
+
+  return result.canceled ? null : result.filePath;
+});
+
+// 16. 抓取日志
+ipcMain.handle('capture-log', async (event, { packageName, deviceId, savePath }) => {
+  try {
+    console.log('开始抓取日志:', { packageName, deviceId, savePath });
+
+    mainWindow.webContents.send('log-output', {
+      type: 'info',
+      data: `正在抓取设备 ${deviceId} 的日志...\n`
+    });
+
+    // 首先获取应用的 PID
+    let pid = null;
+    try {
+      const pidResult = await executeCommand('adb', ['-s', deviceId, 'shell', 'pidof', packageName]);
+      pid = pidResult.trim();
+      console.log('应用 PID:', pid);
+    } catch (error) {
+      console.log('无法获取应用 PID，将抓取所有日志并按包名过滤');
+    }
+
+    // 抓取日志
+    let logContent = '';
+    if (pid) {
+      // 如果有 PID，只抓取该进程的日志
+      mainWindow.webContents.send('log-output', {
+        type: 'info',
+        data: `找到应用进程 PID: ${pid}\n`
+      });
+
+      logContent = await executeCommand('adb', [
+        '-s',
+        deviceId,
+        'logcat',
+        '-d',
+        '-v',
+        'time',
+        '--pid=' + pid
+      ]);
+    } else {
+      // 没有 PID，抓取所有日志并按包名过滤
+      mainWindow.webContents.send('log-output', {
+        type: 'info',
+        data: `应用未运行，将抓取包含 "${packageName}" 的所有日志\n`
+      });
+
+      const allLogs = await executeCommand('adb', [
+        '-s',
+        deviceId,
+        'logcat',
+        '-d',
+        '-v',
+        'time'
+      ]);
+
+      // 过滤包含包名的日志行
+      logContent = allLogs
+        .split('\n')
+        .filter(line => line.includes(packageName))
+        .join('\n');
+    }
+
+    if (!logContent || logContent.trim().length === 0) {
+      mainWindow.webContents.send('log-output', {
+        type: 'warning',
+        data: '未找到相关日志\n'
+      });
+
+      return {
+        success: false,
+        error: '未找到相关日志，请确保应用正在运行或曾经运行过'
+      };
+    }
+
+    // 写入文件
+    await writeFile(savePath, logContent, 'utf-8');
+
+    const lineCount = logContent.split('\n').length;
+    console.log('日志已保存到:', savePath, '行数:', lineCount);
+
+    mainWindow.webContents.send('log-output', {
+      type: 'success',
+      data: `日志已成功保存到: ${savePath}\n共 ${lineCount} 行\n`
+    });
+
+    return {
+      success: true,
+      path: savePath,
+      lineCount: lineCount
+    };
+  } catch (error) {
+    console.error('抓取日志失败:', error);
+
+    mainWindow.webContents.send('log-output', {
+      type: 'error',
+      data: `抓取日志失败: ${error.message}\n`
+    });
+
+    return {
+      success: false,
+      error: error.message
+    };
+  }
+});
+
+// 17. 打开日志文件
+ipcMain.handle('open-log-file', async (event, filePath) => {
+  try {
+    await shell.openPath(filePath);
+    return { success: true };
+  } catch (error) {
+    console.error('打开日志文件失败:', error);
+    return {
+      success: false,
+      error: error.message
+    };
+  }
+});

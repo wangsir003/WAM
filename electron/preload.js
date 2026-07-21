@@ -36,6 +36,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Claude AI
   openClaude: (projectPath) => ipcRenderer.invoke('open-claude', projectPath),
 
+  // 抓取日志
+  selectLogSavePath: (projectName) => ipcRenderer.invoke('select-log-save-path', projectName),
+  captureLog: (packageName, deviceId, savePath) =>
+    ipcRenderer.invoke('capture-log', { packageName, deviceId, savePath }),
+  openLogFile: (filePath) => ipcRenderer.invoke('open-log-file', filePath),
+
   // 日志监听
   onLogOutput: (callback) => {
     ipcRenderer.on('log-output', (event, data) => callback(data));

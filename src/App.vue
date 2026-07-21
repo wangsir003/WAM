@@ -82,19 +82,7 @@
             </div>
           </div>
 
-          <!-- 未选中项目时的空状态 -->
-          <div v-else-if="!projectStore.selectedProject" class="empty-state">
-            <a-empty
-              description="请先从左侧添加或选择一个项目"
-              :image="Empty.PRESENTED_IMAGE_SIMPLE"
-            >
-              <a-button type="primary" @click="handleAddProject({ key: 'folder' })">
-                <PlusOutlined /> 添加项目
-              </a-button>
-            </a-empty>
-          </div>
-
-          <!-- 已选中项目时的内容区域 -->
+          <!-- 功能区始终显示 -->
           <div v-else class="content-wrapper">
             <div :class="['function-area', { 'full-width': !projectStore.isRunning }]">
               <ProjectDetail />
