@@ -16,7 +16,7 @@ let logcatProcess = null; // 存储 logcat 进程
 let claudeWindows = {}; // 存储 Claude PowerShell 窗口的进程 ID，按项目路径索引
 
 // ==================== ADB 路径管理 ====================
-function getAdbPath() {
+function getBuiltinAdbPath() {
   // 开发环境和打包后环境的 ADB 路径
   const isDev = !app.isPackaged;
 
@@ -29,27 +29,61 @@ function getAdbPath() {
   }
 }
 
+// 检查系统是否已配置 ADB
+async function checkSystemAdb() {
+  return new Promise((resolve) => {
+    const { exec } = require('child_process');
+    exec('adb version', (error, stdout, stderr) => {
+      if (error) {
+        console.log('系统未配置 ADB 或 ADB 不可用');
+        resolve(false);
+      } else {
+        console.log('检测到系统已配置 ADB:');
+        console.log(stdout.trim());
+        resolve(true);
+      }
+    });
+  });
+}
+
 // 初始化 ADB 环境
-function initializeAdb() {
-  const adbPath = getAdbPath();
+async function initializeAdb() {
+  console.log('========== ADB 环境初始化 ==========');
+
+  // 首先检查系统是否已经配置了 ADB
+  const hasSystemAdb = await checkSystemAdb();
+
+  if (hasSystemAdb) {
+    console.log('✓ 使用系统已配置的 ADB');
+    console.log('===================================\n');
+    return true;
+  }
+
+  // 系统没有 ADB，使用内置的 ADB
+  console.log('系统未配置 ADB，使用应用内置的 ADB 工具');
+
+  const adbPath = getBuiltinAdbPath();
   const adbDir = dirname(adbPath);
 
-  console.log('ADB 路径:', adbPath);
-  console.log('ADB 目录:', adbDir);
+  console.log('内置 ADB 路径:', adbPath);
+  console.log('内置 ADB 目录:', adbDir);
 
-  // 检查 ADB 是否存在
+  // 检查内置 ADB 是否存在
   if (!existsSync(adbPath)) {
-    console.error('ADB 不存在于路径:', adbPath);
+    console.error('✗ 内置 ADB 不存在于路径:', adbPath);
+    console.error('请运行 npm run setup-adb 来设置 ADB 工具');
+    console.log('===================================\n');
     return false;
   }
 
-  // 将 ADB 目录添加到 PATH 环境变量（仅对当前进程及其子进程有效）
+  // 将内置 ADB 目录添加到 PATH 环境变量（仅对当前进程及其子进程有效）
   const currentPath = process.env.PATH || '';
   if (!currentPath.includes(adbDir)) {
     process.env.PATH = `${adbDir};${currentPath}`;
-    console.log('已将 ADB 目录添加到 PATH 环境变量');
+    console.log('✓ 已将内置 ADB 目录添加到 PATH 环境变量');
   }
 
+  console.log('===================================\n');
   return true;
 }
 
@@ -197,8 +231,10 @@ app.whenReady().then(async () => {
     console.log('Is packaged:', app.isPackaged);
 
     // 初始化 ADB 环境
-    if (!initializeAdb()) {
-      console.warn('ADB 初始化失败，ADB 相关功能可能无法使用');
+    const adbInitialized = await initializeAdb();
+    if (!adbInitialized) {
+      console.warn('⚠ ADB 初始化失败，ADB 相关功能可能无法使用');
+      console.warn('提示：如需使用 ADB 功能，请安装 Android SDK 或运行 npm run setup-adb');
     }
 
     // 初始化缓存目录
