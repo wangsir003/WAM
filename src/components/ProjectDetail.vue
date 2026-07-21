@@ -375,31 +375,49 @@ async function captureLog() {
 
         Modal.confirm({
           title: '选择要抓取日志的应用',
-          width: 600,
-          content: h('div', { style: 'max-height: 400px; overflow-y: auto;' }, [
-            h('p', { style: 'margin-bottom: 12px; color: #666;' }, `找到 ${result.apps.length} 个已安装应用，请选择一个：`),
-            h('a-radio-group', {
-              value: radioGroupRef.value,
-              'onUpdate:value': (val) => {
-                radioGroupRef.value = val;
-                selectedPackage = val;
-              },
-              style: 'width: 100%; display: block;'
-            }, result.apps.map(app =>
-              h('div', {
-                key: app.packageName,
-                style: 'margin-bottom: 8px; padding: 8px; border: 1px solid #f0f0f0; border-radius: 4px;'
-              }, [
-                h('a-radio', { value: app.packageName }, [
-                  h('div', { style: 'display: inline-block; margin-left: 8px;' }, [
-                    h('div', { style: 'font-weight: 500;' }, app.appName || app.packageName),
-                    h('div', { style: 'font-size: 12px; color: #999;' }, app.packageName)
+          width: 700,
+          content: h('div', { style: 'max-height: 500px; overflow-y: auto;' }, [
+            h('p', { style: 'margin-bottom: 16px; color: #666; font-size: 13px;' },
+              `在设备上找到 ${result.apps.length} 个第三方应用，请选择一个进行日志抓取：`
+            ),
+            h('div', { style: 'display: flex; flex-direction: column; gap: 8px;' },
+              result.apps.map(app =>
+                h('div', {
+                  key: app.packageName,
+                  style: {
+                    padding: '12px',
+                    border: selectedPackage === app.packageName ? '2px solid #1890ff' : '1px solid #f0f0f0',
+                    borderRadius: '6px',
+                    cursor: 'pointer',
+                    transition: 'all 0.3s',
+                    backgroundColor: selectedPackage === app.packageName ? '#e6f7ff' : '#fff',
+                  },
+                  onClick: () => {
+                    radioGroupRef.value = app.packageName;
+                    selectedPackage = app.packageName;
+                  }
+                }, [
+                  h('div', { style: 'display: flex; align-items: center; gap: 12px;' }, [
+                    h('input', {
+                      type: 'radio',
+                      name: 'app-select',
+                      checked: selectedPackage === app.packageName,
+                      style: 'cursor: pointer;'
+                    }),
+                    h('div', { style: 'flex: 1;' }, [
+                      h('div', {
+                        style: 'font-weight: 500; font-size: 14px; color: #262626; margin-bottom: 4px;'
+                      }, app.appName),
+                      h('div', {
+                        style: 'font-size: 12px; color: #8c8c8c; font-family: monospace;'
+                      }, app.packageName)
+                    ])
                   ])
                 ])
-              ])
-            ))
+              )
+            )
           ]),
-          okText: '确定',
+          okText: '确定抓取',
           cancelText: '取消',
           onOk: () => {
             if (selectedPackage) {
